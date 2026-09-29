@@ -176,7 +176,7 @@ test('inline notes support cancel, keyboard save and completion persistence', as
   await row.locator('.inline-note').press('Control+Enter');
   await expect(row.locator('.note-text')).toHaveText('检查数据\n完成初稿');
   await row.locator('.note-check').click();
-  await row.locator('.task-title').click();
+  await expect(row).toHaveClass(/open/);
   await expect(row.locator('.note-row')).toHaveClass(/note-done/);
   await page.reload();
   await row.locator('.expand').click();
@@ -501,7 +501,8 @@ test('changing the UI language never translates user task, note or course conten
   await page.locator('#settings-open').click();
   await page.locator('#language-select').selectOption('en');
   await page.locator('#settings-close').click();
-  await row.locator('.expand').click();
+  await expect(row).toHaveClass(/open/);
+  await expect(row.locator('.note-text')).toBeVisible();
   await expect(row.locator('.task-title')).toHaveText('保存');
   await expect(row.locator('.note-text')).toHaveText('完成');
   await expect(page.locator('.schedule-course span')).toHaveText('取消');

@@ -1742,6 +1742,13 @@
       .schedule-card.schedule-collapsed .schedule-head {
         border-bottom: 0;
       }
+      .schedule-card.schedule-collapsed {
+        height: auto !important;
+        min-height: 0 !important;
+      }
+      .schedule-card.schedule-collapsed [data-schedule-resize] {
+        display: none;
+      }
       .schedule-card.schedule-collapsed .schedule-scroll,
       .schedule-card.schedule-collapsed .schedule-empty {
         display: none;
@@ -2573,6 +2580,16 @@
         LOCK_KEY = "minimal-task-widget-locked-v1",
         SCHEDULE_LOCK_KEY = "minimal-task-widget-schedule-locked-v1",
         SETTINGS_KEY = "minimal-task-widget-settings-v1";
+      const dateFormatters = new Map();
+      function dateFormatter(locale, options) {
+        const key = JSON.stringify([locale, options]);
+        if (!dateFormatters.has(key)) {
+          if (dateFormatters.size >= 32) dateFormatters.clear();
+          dateFormatters.set(key, new Intl.DateTimeFormat(locale, options));
+        }
+        return dateFormatters.get(key);
+      }
+      const systemTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
       let pipWindow = null,
         pipRestore = null;
       const activeDocument = () =>
@@ -2594,9 +2611,30 @@
         clearTimeout(toastTimer);
         toastTimer = setTimeout(() => el.classList.remove("show"), 1800);
       }
+      function writeStorage(key, value) {
+        try {
+          localStorage.setItem(key, value);
+          return true;
+        } catch {
+          toast("本地保存失败，请释放存储空间后重试");
+          return false;
+        }
+      }
+      function saveSettings(next) {
+        if (!writeStorage(SETTINGS_KEY, JSON.stringify(next))) return false;
+        settings = next;
+        return true;
+      }
       const widget = $("widget"),
         desktopPanel =
           new URLSearchParams(location.search).get("panel") || "widget";
+      const reportedBounds = new Map();
+      function sendBounds(method, bounds) {
+        const value = JSON.stringify(bounds);
+        if (reportedBounds.get(method) === value) return;
+        reportedBounds.set(method, value);
+        window.desktopBridge[method](bounds);
+      }
       function reportWidgetBounds() {
         if (
           desktopPanel === "widget" &&
@@ -2607,7 +2645,7 @@
             draftRect = draft?.classList.contains("open")
               ? draft.getBoundingClientRect()
               : null;
-          window.desktopBridge.reportWidgetBounds({
+          sendBounds("reportWidgetBounds", {
             left: r.left,
             top: r.top,
             width: r.width,
@@ -2681,6 +2719,13 @@
           .map((t) => ({
             ...t,
             id: typeof t.id === "string" ? t.id : crypto.randomUUID(),
+            date: validDate(t.date) ? t.date : "",
+            dateStart: validDate(t.dateStart) ? t.dateStart : "",
+            dateEnd: validDate(t.dateEnd) ? t.dateEnd : "",
+            period:
+              validDate(t.period?.start) && validDate(t.period?.end)
+                ? t.period
+                : null,
             items: Array.isArray(t.items)
               ? t.items.filter((item) => item && typeof item === "object")
               : [],
@@ -2691,15 +2736,25 @@
       }
       tasks = normalizeTasks(tasks);
       let addingType = "main";
+      function validDate(value) {
+        if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value))
+          return false;
+        const date = new Date(value + "T00:00:00Z");
+        return (
+          Number.isFinite(date.getTime()) &&
+          date.toISOString().slice(0, 10) === value
+        );
+      }
       function defaultSettings() {
+        const today = isoDate(new Date());
         return {
-          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          timezone: systemTimezone,
           fontSize: 14,
           theme: "default",
           language: "zh-CN",
           periodMode: "day",
-          periodStart: new Date().toLocaleDateString("en-CA"),
-          periodEnd: new Date().toLocaleDateString("en-CA"),
+          periodStart: today,
+          periodEnd: today,
           followSystemDate: true,
           courseEnabled: false,
         };
@@ -2707,7 +2762,7 @@
       function normalizeSettings(value) {
         const result = { ...defaultSettings(), ...value };
         try {
-          new Intl.DateTimeFormat("en", { timeZone: result.timezone });
+          dateFormatter("en", { timeZone: result.timezone });
         } catch {
           result.timezone = defaultSettings().timezone;
         }
@@ -2715,21 +2770,23 @@
           10,
           Math.min(18, Number(result.fontSize) || 14),
         );
+        if (!["zh-CN", "en", "ja", "ko", "zh-TW"].includes(result.language))
+          result.language = "zh-CN";
+        result.courseEnabled = result.courseEnabled === true;
         if (!["day", "week", "month", "custom"].includes(result.periodMode))
           result.periodMode = "day";
         for (const key of ["periodStart", "periodEnd"]) {
-          if (
-            !/^\d{4}-\d{2}-\d{2}$/.test(result[key]) ||
-            !Number.isFinite(Date.parse(result[key]))
-          )
-            result[key] = defaultSettings()[key];
+          if (!validDate(result[key])) result[key] = defaultSettings()[key];
         }
         if (
-          !Number.isFinite(Number(result.manualTime)) ||
-          !Number.isFinite(Number(result.manualTimeSavedAt))
+          !Number.isFinite(new Date(Number(result.manualTime)).getTime()) ||
+          !Number.isFinite(new Date(Number(result.manualTimeSavedAt)).getTime())
         ) {
           delete result.manualTime;
           delete result.manualTimeSavedAt;
+        } else {
+          result.manualTime = Number(result.manualTime);
+          result.manualTimeSavedAt = Number(result.manualTimeSavedAt);
         }
         return result;
       }
@@ -2756,6 +2813,12 @@
         "zh-TW": "主線 / 支線",
       };
       const lexicon = {
+        "本地保存失败，请释放存储空间后重试": [
+          "Could not save locally. Free some storage and retry.",
+          "保存できません。空き容量を増やして再試行してください。",
+          "저장 공간을 확보한 후 다시 저장하세요.",
+          "本機儲存失敗，請釋放空間後重試",
+        ],
         显示设置: ["Display settings", "表示設定", "표시 설정", "顯示設定"],
         语言: ["Language", "言語", "언어", "語言"],
         主题: ["Theme", "テーマ", "테마", "主題"],
@@ -3363,12 +3426,13 @@
         return Array.isArray(lexicon[value]) ? lexicon[value][index] : value;
       }
       const originalText = new WeakMap();
+      const sourceText = new Map();
+      for (const [source, translations] of Object.entries(lexicon)) {
+        for (const text of translations)
+          if (!sourceText.has(text)) sourceText.set(text, source);
+      }
       function untr(text) {
-        const value = String(text);
-        for (const [source, translations] of Object.entries(lexicon))
-          if (Array.isArray(translations) && translations.includes(value))
-            return source;
-        return value;
+        return sourceText.get(String(text)) || String(text);
       }
       function setLocalizedText(element, source, localized = tr(source)) {
         element.textContent = localized;
@@ -3422,7 +3486,7 @@
         window.desktopBridge?.setLocale(uiLocale);
         $("language-select").value = uiLocale;
         taskWeekdays = Array.from({ length: 7 }, (_, i) =>
-          new Intl.DateTimeFormat(localeNames[uiLocale], {
+          dateFormatter(localeNames[uiLocale], {
             weekday: "short",
             timeZone: "UTC",
           }).format(new Date(Date.UTC(2024, 0, 1 + i))),
@@ -3461,8 +3525,10 @@
       localizationObserver.observe(document.body, localizationOptions);
       $("language-select").value = uiLocale;
       $("language-select").addEventListener("change", (e) => {
-        settings.language = e.target.value;
-        localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+        if (!saveSettings({ ...settings, language: e.target.value })) {
+          e.target.value = settings.language;
+          return;
+        }
         applyLanguage();
       });
       const startupSetting = $("startup-setting"),
@@ -3493,15 +3559,16 @@
           startupToggle.disabled = false;
         }
       });
+      function currentTime() {
+        return new Date(
+          Number.isFinite(settings.manualTime)
+            ? settings.manualTime + Date.now() - settings.manualTimeSavedAt
+            : Date.now(),
+        );
+      }
       function currentZoneDay() {
-        const now = Number(settings.manualTime)
-            ? new Date(
-                Number(settings.manualTime) +
-                  Date.now() -
-                  Number(settings.manualTimeSavedAt || Date.now()),
-              )
-            : new Date(),
-          parts = new Intl.DateTimeFormat("en-CA", {
+        const now = currentTime(),
+          parts = dateFormatter("en-CA", {
             timeZone: settings.timezone,
             year: "numeric",
             month: "2-digit",
@@ -3510,20 +3577,18 @@
           part = (k) => parts.find((p) => p.type === k).value;
         return `${part("year")}-${part("month")}-${part("day")}`;
       }
+      function updateText(id, value) {
+        const element = $(id);
+        if (element.textContent !== value) element.textContent = value;
+      }
       function updateClock() {
-        const now = Number(settings.manualTime)
-            ? new Date(
-                Number(settings.manualTime) +
-                  Date.now() -
-                  Number(settings.manualTimeSavedAt || Date.now()),
-              )
-            : new Date(),
+        const now = currentTime(),
           opts = { timeZone: settings.timezone };
         if (
           settings.periodMode === "day" &&
           settings.followSystemDate !== false
         ) {
-          const parts = new Intl.DateTimeFormat("en-CA", {
+          const parts = dateFormatter("en-CA", {
               ...opts,
               year: "numeric",
               month: "2-digit",
@@ -3534,7 +3599,7 @@
           if (settings.periodStart !== today || settings.periodEnd !== today) {
             settings.periodStart = today;
             settings.periodEnd = today;
-            localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+            writeStorage(SETTINGS_KEY, JSON.stringify(settings));
             if (typeof render === "function") render();
           }
         }
@@ -3544,21 +3609,31 @@
             ? new Date(settings.periodStart + "T12:00:00Z")
             : now,
           displayOpts = selectedDay ? { timeZone: "UTC" } : opts;
-        $("today-date").textContent = new Intl.DateTimeFormat(
-          localeNames[uiLocale],
-          { ...displayOpts, month: "long", day: "numeric" },
-        ).format(displayDate);
-        $("today-weekday").textContent = new Intl.DateTimeFormat(
-          localeNames[uiLocale],
-          { ...displayOpts, weekday: "long" },
-        ).format(displayDate);
-        $("clock").textContent = new Intl.DateTimeFormat("zh-CN", {
-          ...opts,
-          hour: "2-digit",
-          minute: "2-digit",
-          second: "2-digit",
-          hour12: false,
-        }).format(now);
+        updateText(
+          "today-date",
+          dateFormatter(localeNames[uiLocale], {
+            ...displayOpts,
+            month: "long",
+            day: "numeric",
+          }).format(displayDate),
+        );
+        updateText(
+          "today-weekday",
+          dateFormatter(localeNames[uiLocale], {
+            ...displayOpts,
+            weekday: "long",
+          }).format(displayDate),
+        );
+        updateText(
+          "clock",
+          dateFormatter("zh-CN", {
+            ...opts,
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+            hour12: false,
+          }).format(now),
+        );
       }
       updateClock();
       setInterval(updateClock, 1000);
@@ -3578,7 +3653,7 @@
         anu: "themes/anu-campus-bg.png",
       };
       function applyTheme(theme) {
-        settings.theme = themeFiles[theme] ? theme : "default";
+        settings.theme = Object.hasOwn(themeFiles, theme) ? theme : "default";
         widget.dataset.theme = settings.theme;
         activeDocument().documentElement.style.setProperty(
           "--theme-art",
@@ -3597,9 +3672,18 @@
         $("app-stack").dataset.theme = settings.theme;
       }
       applyTheme(settings.theme || "default");
-      function persist() {
-        localStorage.setItem(KEY, JSON.stringify(tasks));
+      function persist(next = tasks) {
+        if (!writeStorage(KEY, JSON.stringify(next))) return false;
+        tasks = next;
         render();
+        return true;
+      }
+      function updateTask(id, update) {
+        const current = tasks.find((task) => task.id === id);
+        return (
+          !!current &&
+          persist(tasks.map((task) => (task === current ? update(task) : task)))
+        );
       }
       function deadlineLabel(date) {
         if (!date) return "";
@@ -3718,10 +3802,19 @@
           host = $(type === "main" ? "main-tasks" : "side-tasks");
         $(type === "main" ? "main-count" : "side-count").textContent =
           `${list.filter((t) => !t.done).length} 项待办`;
-        host.innerHTML = "";
+        const previousRows = new Map(
+          [...host.children].map((row) => [row.dataset.id, row]),
+        );
+        const focused = activeDocument().activeElement;
+        const selection = focused?.matches(".inline-note")
+          ? [focused.selectionStart, focused.selectionEnd]
+          : null;
+        host.replaceChildren();
         for (const task of list) {
           const row = document.createElement("div");
           row.className = "task" + (task.done ? " done" : "");
+          const previous = previousRows.get(task.id);
+          if (previous?.classList.contains("open")) row.classList.add("open");
           row.dataset.id = task.id;
           const check = addText(row, "button", "check");
           check.setAttribute(
@@ -3729,8 +3822,10 @@
             task.done ? "标记未完成" : "标记完成",
           );
           check.onclick = () => {
-            task.done = !task.done;
-            persist();
+            updateTask(task.id, (current) => ({
+              ...current,
+              done: !current.done,
+            }));
           };
           const title = addText(row, "div", "task-title", task.title);
           title.onclick = () => row.classList.toggle("open");
@@ -3770,7 +3865,7 @@
             }
           }
           const notes = addText(details, "ul", "notes");
-          for (const item of task.items) {
+          for (const [index, item] of task.items.entries()) {
             const li = addText(
               notes,
               "li",
@@ -3782,16 +3877,16 @@
               "aria-label",
               item.done ? "标记待确认" : "确认完成",
             );
-            noteCheck.onclick = () => {
-              item.done = !item.done;
-              persist();
-            };
+            noteCheck.onclick = () =>
+              updateTask(task.id, (current) => ({
+                ...current,
+                items: current.items.map((note, i) =>
+                  i === index ? { ...note, done: !note.done } : note,
+                ),
+              }));
             const content = addText(li, "span", "note-text");
             content.title = "点击确认 / 取消确认";
-            content.onclick = () => {
-              item.done = !item.done;
-              persist();
-            };
+            content.onclick = noteCheck.onclick;
             if (item.html) content.innerHTML = sanitizeDraft(item.html);
             else content.textContent = item.text || "";
             if (item.image && !item.html) {
@@ -3806,7 +3901,16 @@
           add.title = "添加待确认项";
           add.setAttribute("aria-label", "添加待确认项");
           add.onclick = () => beginInlineNote(task, notes, add);
+          const editing = previous?.querySelector(".note-row.editing");
+          if (editing) {
+            notes.append(editing);
+            add.disabled = true;
+          }
           host.append(row);
+        }
+        if (selection && focused.isConnected) {
+          focused.focus({ preventScroll: true });
+          focused.setSelectionRange(...selection);
         }
       }
       function render() {
@@ -3820,14 +3924,14 @@
         taskDateRangeAnchor = "",
         taskCalendarCursor = new Date();
       let taskWeekdays = Array.from({ length: 7 }, (_, i) =>
-        new Intl.DateTimeFormat(localeNames[uiLocale], {
+        dateFormatter(localeNames[uiLocale], {
           weekday: "short",
           timeZone: "UTC",
         }).format(new Date(Date.UTC(2024, 0, 1 + i))),
       );
       function taskDateLabel(value) {
         const [y, m, d] = value.split("-").map(Number);
-        return new Intl.DateTimeFormat(localeNames[uiLocale], {
+        return dateFormatter(localeNames[uiLocale], {
           timeZone: "UTC",
           month: "long",
           day: "numeric",
@@ -3842,7 +3946,7 @@
           first = new Date(year, month, 1),
           offset = (first.getDay() + 6) % 7,
           monthDate = new Date(year, month, 1);
-        $("task-calendar-month").textContent = new Intl.DateTimeFormat(
+        $("task-calendar-month").textContent = dateFormatter(
           localeNames[uiLocale],
           { year: "numeric", month: "long" },
         ).format(monthDate);
@@ -3989,23 +4093,25 @@
           toast("请选择完整的日期范围");
           return;
         }
-        tasks.push({
-          id: crypto.randomUUID(),
-          type: addingType,
-          title,
-          date: addingType === "main" ? taskDateStart : "",
-          dateEnd: addingType === "main" ? taskDateEnd : "",
-          time: $("time-input").value,
-          done: false,
-          items: [],
-          period: {
-            mode: settings.periodMode,
-            start: settings.periodStart,
-            end: settings.periodEnd,
+        const next = [
+          ...tasks,
+          {
+            id: crypto.randomUUID(),
+            type: addingType,
+            title,
+            date: addingType === "main" ? taskDateStart : "",
+            dateEnd: addingType === "main" ? taskDateEnd : "",
+            time: $("time-input").value,
+            done: false,
+            items: [],
+            period: {
+              mode: settings.periodMode,
+              start: settings.periodStart,
+              end: settings.periodEnd,
+            },
           },
-        });
-        closeScrim($("scrim"));
-        persist();
+        ];
+        if (persist(next)) closeScrim($("scrim"));
       };
       const fitObserver = new ResizeObserver(() => {
         const r = widget.getBoundingClientRect();
@@ -4028,7 +4134,7 @@
       }
       function toggleCollapsed() {
         widget.classList.toggle("collapsed");
-        localStorage.setItem(
+        writeStorage(
           UI_KEY,
           widget.classList.contains("collapsed") ? "1" : "0",
         );
@@ -4047,11 +4153,11 @@
         lockButton.title = locked
           ? "解锁后可拖动或调整大小"
           : "锁定后无法拖动或调整大小";
-        if (persist) localStorage.setItem(LOCK_KEY, locked ? "1" : "0");
+        if (persist) writeStorage(LOCK_KEY, locked ? "1" : "0");
         if (typeof syncScheduleFreeState === "function")
           syncScheduleFreeState();
       }
-      setLocked(localStorage.getItem(LOCK_KEY) === "1");
+      setLocked(localStorage.getItem(LOCK_KEY) === "1", false);
       lockButton.onclick = () =>
         setLocked(!widget.classList.contains("locked"));
       let widgetDrag = null,
@@ -4243,8 +4349,9 @@
         .forEach(
           (button) =>
             (button.onclick = () => {
+              if (!saveSettings({ ...settings, theme: button.dataset.value }))
+                return;
               applyTheme(button.dataset.value);
-              localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
             }),
         );
       $("settings-open").onclick = () =>
@@ -4254,16 +4361,17 @@
         if (e.target === $("settings-scrim")) closeScrim($("settings-scrim"));
       };
       zoneSelect.onchange = () => {
-        settings.timezone = zoneSelect.value;
-        localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+        if (!saveSettings({ ...settings, timezone: zoneSelect.value })) {
+          zoneSelect.value = settings.timezone;
+          return;
+        }
         updateClock();
       };
       $("reset-defaults").onclick = () => {
-        settings = defaultSettings();
+        if (!saveSettings(defaultSettings())) return;
         applyTheme("default");
         courseToggle.setAttribute("aria-checked", "false");
         updateScheduleVisibility();
-        localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
         zoneSelect.value = settings.timezone;
         applyFontSize();
         applyLanguage();
@@ -4302,9 +4410,8 @@
         );
       }
       $("font-size-range").oninput = (e) => {
-        settings.fontSize = Number(e.target.value);
+        saveSettings({ ...settings, fontSize: Number(e.target.value) });
         applyFontSize();
-        localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
       };
       const editor = $("draft-editor"),
         draftWindow = $("draft-window");
@@ -4313,21 +4420,29 @@
         $("draft-title").value = localStorage.getItem(DRAFT_TITLE_KEY) || "";
       } catch {}
       $("draft-title").addEventListener("input", () =>
-        localStorage.setItem(DRAFT_TITLE_KEY, $("draft-title").value),
+        writeStorage(DRAFT_TITLE_KEY, $("draft-title").value),
       );
       function saveDraft() {
-        localStorage.setItem(DRAFT_KEY, sanitizeDraft(editor.innerHTML));
+        writeStorage(DRAFT_KEY, sanitizeDraft(editor.innerHTML));
       }
       function appendDraftToTask(id) {
         const task = tasks.find((task) => task.id === id);
         const html = sanitizeDraft(editor.innerHTML);
-        if (!task || !html.trim()) return;
-        task.memos ||= [];
-        task.memos.push({ title: $("draft-title").value.trim(), html });
-        persist();
+        if (!task || !html.trim()) return false;
+        if (
+          !updateTask(id, (current) => ({
+            ...current,
+            memos: [
+              ...(current.memos || []),
+              { title: $("draft-title").value.trim(), html },
+            ],
+          }))
+        )
+          return false;
         activeDocument()
           .querySelector(`[data-id="${CSS.escape(id)}"]`)
           ?.classList.add("open");
+        return true;
       }
       editor.addEventListener("input", saveDraft);
       editor.addEventListener("paste", (e) => {
@@ -4438,8 +4553,7 @@
       $("draft-bar").addEventListener("pointerup", () => {
         if (draftDrag) {
           if (draftTargetId) {
-            appendDraftToTask(draftTargetId);
-            setTimeout(hideDraft, 180);
+            if (appendDraftToTask(draftTargetId)) hideDraft();
           }
           activeDocument()
             .querySelectorAll(".details.drop-target")
@@ -4467,8 +4581,7 @@
         const d = e.target.closest(".details");
         if (d && draftWindow.classList.contains("open")) {
           e.preventDefault();
-          appendDraftToTask(d.dataset.dropTask);
-          hideDraft();
+          if (appendDraftToTask(d.dataset.dropTask)) hideDraft();
         }
       });
       function beginInlineNote(task, list, button) {
@@ -4502,20 +4615,24 @@
             input.focus();
             return;
           }
-          finished = true;
-          button.disabled = false;
           if (shouldSave) {
-            task.items.push({
-              id: crypto.randomUUID(),
-              text: value,
-              done: false,
-            });
-            persist();
-            const row = activeDocument().querySelector(
-              `[data-id="${CSS.escape(task.id)}"]`,
-            );
-            if (row) row.classList.add("open");
-          } else li.remove();
+            if (
+              !updateTask(task.id, (current) => ({
+                ...current,
+                items: [
+                  ...current.items,
+                  { id: crypto.randomUUID(), text: value, done: false },
+                ],
+              }))
+            )
+              return;
+          }
+          finished = true;
+          li.remove();
+          const add = activeDocument().querySelector(
+            `[data-id="${CSS.escape(task.id)}"] .inline-add`,
+          );
+          if (add) add.disabled = false;
         }
         save.onclick = () => finish(true);
         cancel.onclick = () => finish(false);
@@ -4531,7 +4648,7 @@
         });
       }
       function toLocalInputValue(date) {
-        const parts = new Intl.DateTimeFormat("en-CA", {
+        const parts = dateFormatter("en-CA", {
           timeZone: settings.timezone,
           year: "numeric",
           month: "2-digit",
@@ -4559,14 +4676,7 @@
         return NaN; // A skipped daylight-saving time has no corresponding instant.
       }
       function openClockSettings() {
-        const now = Number(settings.manualTime)
-          ? new Date(
-              Number(settings.manualTime) +
-                Date.now() -
-                Number(settings.manualTimeSavedAt || Date.now()),
-            )
-          : new Date();
-        $("manual-datetime").value = toLocalInputValue(now);
+        $("manual-datetime").value = toLocalInputValue(currentTime());
         $("clock-scrim").classList.add("open");
       }
       $("clock").onclick = openClockSettings;
@@ -4590,31 +4700,36 @@
           toast("请选择有效的日期和时间");
           return;
         }
-        settings.manualTime = instant;
-        settings.manualTimeSavedAt = Date.now();
-        settings.followSystemDate = true;
-        localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+        if (
+          !saveSettings({
+            ...settings,
+            manualTime: instant,
+            manualTimeSavedAt: Date.now(),
+            followSystemDate: true,
+          })
+        )
+          return;
         updateClock();
         closeScrim($("clock-scrim"));
         toast("日期和时间已保存");
       };
       $("clock-system").onclick = () => {
-        delete settings.manualTime;
-        delete settings.manualTimeSavedAt;
-        settings.followSystemDate = true;
-        if (settings.periodMode === "day") {
+        const next = { ...settings, followSystemDate: true };
+        delete next.manualTime;
+        delete next.manualTimeSavedAt;
+        if (next.periodMode === "day") {
           const n = new Date(),
-            p = new Intl.DateTimeFormat("en-CA", {
+            p = dateFormatter("en-CA", {
               timeZone: settings.timezone,
               year: "numeric",
               month: "2-digit",
               day: "2-digit",
             }).formatToParts(n),
             v = (k) => p.find((x) => x.type === k).value;
-          settings.periodStart = `${v("year")}-${v("month")}-${v("day")}`;
-          settings.periodEnd = settings.periodStart;
+          next.periodStart = `${v("year")}-${v("month")}-${v("day")}`;
+          next.periodEnd = next.periodStart;
         }
-        localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+        if (!saveSettings(next)) return;
         updateClock();
         render();
         closeScrim($("clock-scrim"));
@@ -4752,19 +4867,25 @@
           toast("请选择日期");
           return;
         }
-        settings.periodMode = periodDraft.mode;
-        settings.periodStart = periodDraft.start;
-        settings.periodEnd = periodDraft.end;
-        settings.followSystemDate =
-          periodDraft.mode === "day" && periodDraft.start === currentZoneDay();
-        localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+        if (
+          !saveSettings({
+            ...settings,
+            periodMode: periodDraft.mode,
+            periodStart: periodDraft.start,
+            periodEnd: periodDraft.end,
+            followSystemDate:
+              periodDraft.mode === "day" &&
+              periodDraft.start === currentZoneDay(),
+          })
+        )
+          return;
         closeScrim($("period-scrim"));
         render();
         updateClock();
       };
       const SCHEDULE_KEY = "minimal-task-widget-schedule-v1";
       let weekdays = Array.from({ length: 7 }, (_, i) =>
-        new Intl.DateTimeFormat(localeNames[uiLocale], {
+        dateFormatter(localeNames[uiLocale], {
           weekday: "short",
           timeZone: "UTC",
         }).format(new Date(Date.UTC(2024, 0, 1 + i))),
@@ -4805,7 +4926,7 @@
         )
           return;
         const r = scheduleCard.getBoundingClientRect();
-        window.desktopBridge.reportScheduleBounds({
+        sendBounds("reportScheduleBounds", {
           left: r.left,
           top: r.top,
           width: r.width,
@@ -4856,9 +4977,11 @@
       };
       let editingCourseId = null,
         suppressCourseClick = false;
-      function saveCourses() {
-        localStorage.setItem(SCHEDULE_KEY, JSON.stringify(courses));
+      function saveCourses(next = courses) {
+        if (!writeStorage(SCHEDULE_KEY, JSON.stringify(next))) return false;
+        courses = next;
         drawSchedule();
+        return true;
       }
       function drawSchedule() {
         scheduleGrid.innerHTML = "";
@@ -4981,11 +5104,21 @@
                     startMin + Number(target.dataset.slot) * 30,
                     endMin - duration,
                   );
-                course.day = Number(target.dataset.day);
-                course.start = newStart;
-                course.end = newStart + duration;
-                saveCourses();
-                toast("课程时间已调整");
+                if (
+                  saveCourses(
+                    courses.map((item) =>
+                      item.id === course.id
+                        ? {
+                            ...item,
+                            day: Number(target.dataset.day),
+                            start: newStart,
+                            end: newStart + duration,
+                          }
+                        : item,
+                    ),
+                  )
+                )
+                  toast("课程时间已调整");
               }
             }
             drag = null;
@@ -5022,12 +5155,20 @@
         };
       } catch {}
       function persistScheduleLayout() {
-        localStorage.setItem(
-          SCHEDULE_LAYOUT_KEY,
-          JSON.stringify(scheduleLayout),
-        );
+        if (pipRestore) return;
+        writeStorage(SCHEDULE_LAYOUT_KEY, JSON.stringify(scheduleLayout));
       }
       function applyScheduleLayout() {
+        for (const [key, fallback] of Object.entries({
+          left: 28,
+          top: 420,
+          width: 352,
+          height: 220,
+        })) {
+          if (!Number.isFinite(scheduleLayout[key]))
+            scheduleLayout[key] = fallback;
+        }
+        if (scheduleLayout.floating) clampScheduleLayout();
         appStack.classList.toggle(
           "schedule-floating",
           !!scheduleLayout.floating,
@@ -5171,7 +5312,7 @@
         "1";
       $("schedule-collapse").onclick = () => {
         scheduleCollapsed = !scheduleCollapsed;
-        localStorage.setItem(
+        writeStorage(
           "minimal-task-widget-schedule-collapsed-v1",
           scheduleCollapsed ? "1" : "0",
         );
@@ -5196,7 +5337,7 @@
       }
       function setScheduleLocked(locked) {
         scheduleLocked = locked;
-        localStorage.setItem(SCHEDULE_LOCK_KEY, locked ? "1" : "0");
+        writeStorage(SCHEDULE_LOCK_KEY, locked ? "1" : "0");
         applyScheduleLayout();
         updateScheduleLockButton();
         persistScheduleLayout();
@@ -5257,7 +5398,13 @@
             if (version !== pinRequestVersion[panel]) return;
             const actual = !!states[panel];
             syncPinButtons({ ...desktopPinState, [panel]: actual });
-            toast(actual !== next ? "无法切换桌面置顶状态" : actual ? "桌面已置顶" : "已取消桌面置顶");
+            toast(
+              actual !== next
+                ? "无法切换桌面置顶状态"
+                : actual
+                  ? "桌面已置顶"
+                  : "已取消桌面置顶",
+            );
           } catch {
             if (version === pinRequestVersion[panel])
               syncPinButtons({ ...desktopPinState, [panel]: !next });
@@ -5598,7 +5745,6 @@
         appStack.dataset.theme = settings.theme || "default";
         reportScheduleBounds();
         if (settings.courseEnabled) {
-          drawSchedule();
           requestAnimationFrame(() => {
             if (!scheduleLayout.floating) snapScheduleHome(false);
             reportScheduleBounds();
@@ -5641,8 +5787,12 @@
       $("schedule-cancel").onclick = () => closeScrim(scheduleScrim);
       $("schedule-delete-current").onclick = () => {
         if (!editingCourseId) return;
-        courses = courses.filter((course) => course.id !== editingCourseId);
-        saveCourses();
+        if (
+          !saveCourses(
+            courses.filter((course) => course.id !== editingCourseId),
+          )
+        )
+          return;
         closeScrim(scheduleScrim);
         toast("课程已删除");
       };
@@ -5670,19 +5820,30 @@
           end,
         };
         if (editingCourseId) {
-          const course = courses.find((course) => course.id === editingCourseId);
+          const course = courses.find(
+            (course) => course.id === editingCourseId,
+          );
           if (!course) {
             closeScrim(scheduleScrim);
             toast("课程已删除");
             return;
           }
-          Object.assign(course, values);
+          if (
+            !saveCourses(
+              courses.map((item) =>
+                item === course ? { ...item, ...values } : item,
+              ),
+            )
+          )
+            return;
           toast("课程已更新");
         } else {
-          courses.push({ id: crypto.randomUUID(), ...values });
+          if (
+            !saveCourses([...courses, { id: crypto.randomUUID(), ...values }])
+          )
+            return;
           toast("课程已添加");
         }
-        saveCourses();
         closeScrim(scheduleScrim);
       };
       const courseToggle = $("course-toggle");
@@ -5691,8 +5852,10 @@
         String(!!settings.courseEnabled),
       );
       courseToggle.onclick = () => {
-        settings.courseEnabled = !settings.courseEnabled;
-        localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+        if (
+          !saveSettings({ ...settings, courseEnabled: !settings.courseEnabled })
+        )
+          return;
         window.desktopBridge?.setCourseEnabled?.(settings.courseEnabled);
         updateScheduleVisibility();
         toast(settings.courseEnabled ? "课表已开启" : "课表已关闭");
@@ -5722,12 +5885,32 @@
             tasks = normalizeTasks(JSON.parse(event.newValue));
             render();
           } else if (event.key === SETTINGS_KEY) {
+            const previous = settings;
             settings = normalizeSettings(JSON.parse(event.newValue));
-            applyTheme(settings.theme);
-            applyFontSize();
+            if (previous.theme !== settings.theme) applyTheme(settings.theme);
+            if (previous.fontSize !== settings.fontSize) applyFontSize();
             zoneSelect.value = settings.timezone;
-            applyLanguage();
-            updateScheduleVisibility();
+            const periodChanged = [
+              "periodMode",
+              "periodStart",
+              "periodEnd",
+            ].some((key) => previous[key] !== settings[key]);
+            if (previous.language !== settings.language) applyLanguage();
+            else {
+              if (periodChanged) render();
+              if (
+                periodChanged ||
+                [
+                  "timezone",
+                  "manualTime",
+                  "manualTimeSavedAt",
+                  "followSystemDate",
+                ].some((key) => previous[key] !== settings[key])
+              )
+                updateClock();
+            }
+            if (previous.courseEnabled !== settings.courseEnabled)
+              updateScheduleVisibility();
           } else if (event.key === SCHEDULE_KEY) {
             courses = normalizeCourses(JSON.parse(event.newValue));
             drawSchedule();
