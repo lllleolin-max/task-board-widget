@@ -9,9 +9,10 @@ const root = path.join(__dirname, '..');
 const rect = (left = 10, top = 10, width = 100, height = 100, other = {}) => ({ left, top, width, height, ...other });
 const plain = (value) => JSON.parse(JSON.stringify(value));
 
-async function desktop({ lock = true, platform = 'darwin', packaged = true, floatingPinFails = false, moveTopFails = false } = {}) {
-  const windows = [], trays = [], intervals = new Map(), handlers = new Map(), opened = [], covered = new Set();
-  let nextTimer = 0, cursor = { x: 30, y: 30 }, cursorReads = 0, desktopForeground = false, topSequence = 0;
+async function desktop({ lock = true, platform = 'darwin', packaged = true, floatingPinFails = false, nativeTopmostFails = false, watchFails = false } = {}) {
+  const windows = [], trays = [], intervals = new Map(), handlers = new Map(), opened = [], covered = new Set(), watchers = [], belowCalls = [];
+  let nextTimer = 0, cursor = { x: 30, y: 30 }, cursorReads = 0, foregroundContext = 'other', topSequence = 0;
+  const setContext = value => { foregroundContext = value === true ? 'desktop' : value === false ? 'other' : value; };
   const display = { bounds: { x: 0, y: 0, width: 1920, height: 1080 } };
   class Contents extends EventEmitter {
     constructor() { super(); this.mainFrame = {}; this.messages = []; }
@@ -23,15 +24,16 @@ async function desktop({ lock = true, platform = 'darwin', packaged = true, floa
   class Window extends EventEmitter {
     constructor(options) {
       super(); this.options = options; this.bounds = { x: options.x, y: options.y, width: options.width, height: options.height };
-      this.visible = false; this.destroyed = false; this.webContents = new Contents(); this.mouseChanges = 0; this.pinCalls = []; windows.push(this);
+      this.visible = false; this.destroyed = false; this.webContents = new Contents(); this.mouseChanges = 0; this.pinCalls = [];
+      this.nativeTopmost = false; this.nativePinCalls = []; windows.push(this);
     }
     loadFile(file, { query }) { this.file = file; this.panel = query.panel; this.webContents.emit('did-start-loading'); return Promise.resolve(); }
     isDestroyed() { return this.destroyed; }
     isVisible() { return this.visible; }
     showInactive() { this.raised = (this.raised || 0) + 1; this.topOrder = ++topSequence; if (!this.visible) { this.visible = true; this.emit('show'); } }
     hide() { if (this.visible) { this.visible = false; this.emit('hide'); } }
-    focus() { this.focused = true; }
-    moveTop() { this.topMoves = (this.topMoves || 0) + 1; this.topOrder = ++topSequence; if (!moveTopFails) covered.delete(this); }
+    focus() { this.focused = true; foregroundContext = 'panel'; this.topOrder = ++topSequence; }
+    moveTop() { this.topMoves = (this.topMoves || 0) + 1; this.topOrder = ++topSequence; covered.delete(this); }
     getNativeWindowHandle() { return this; }
     getBounds() { return this.bounds; }
     setBounds(value) { this.bounds = { ...value }; }
@@ -39,8 +41,14 @@ async function desktop({ lock = true, platform = 'darwin', packaged = true, floa
     setShape(rects) { this.shape = plain(rects); this.shapeChanges = (this.shapeChanges || 0) + 1; }
     setAlwaysOnTop(value, level) {
       this.pinCalls.push({ value, level });
+      if (this.isAlwaysOnTop() === value && this.level === level) return;
       this.pinned = value && !(floatingPinFails && level === 'floating'); this.level = level;
-      if (this.pinned) covered.delete(this);
+      this.applyNativeTopmost(this.pinned);
+    }
+    applyNativeTopmost(value) {
+      if (value && nativeTopmostFails) return;
+      this.nativeTopmost = value;
+      if (value) { covered.delete(this); this.belowForeground = false; this.topOrder = ++topSequence; }
     }
     isAlwaysOnTop() { return !!this.pinned; }
     close() {
@@ -80,8 +88,25 @@ async function desktop({ lock = true, platform = 'darwin', packaged = true, floa
   };
   vm.runInNewContext(fs.readFileSync(path.join(root, 'main.cjs'), 'utf8'), {
     require: (name) => name === 'electron' ? electron : name === './windows-desktop.cjs' ? {
-      isDesktopForeground: () => desktopForeground,
+      isDesktopForeground: () => foregroundContext === 'desktop',
       isDesktopAbove: (win) => covered.has(win),
+      foregroundContext: () => foregroundContext,
+      isTopmost: win => win.nativeTopmost,
+      ensureTopmost: (win, enabled) => {
+        if (win.nativeTopmost !== enabled) { win.nativePinCalls.push(enabled); win.applyNativeTopmost(enabled); }
+        return win.nativeTopmost;
+      },
+      placeBelowForeground: win => {
+        if (foregroundContext !== 'other') return;
+        assert.equal(win.isAlwaysOnTop(), false, 'the panel must be demoted before positioning below a normal foreground app');
+        assert.equal(win.nativeTopmost, false, 'the actual native band must also be demoted');
+        win.belowForeground = true; belowCalls.push(win);
+      },
+      watchChanges: (callback) => {
+        const watcher = { callback, active: !watchFails, disposals: 0 };
+        watchers.push(watcher);
+        return watchFails ? null : () => { watcher.active = false; watcher.disposals++; };
+      },
     } : require(name),
     __dirname: root, process: { platform, execPath: 'C:/Taskboard/Taskboard.exe' },
     setInterval: (callback, delay) => { intervals.set(++nextTimer, { callback, delay }); return nextTimer; },
@@ -93,10 +118,11 @@ async function desktop({ lock = true, platform = 'darwin', packaged = true, floa
     return { sender, senderFrame: sender?.mainFrame };
   };
   const send = (channel, ...args) => ipcMain.emit(`desktop:${channel}`, event(channel === 'report-schedule-bounds' ? 'schedule' : 'widget'), ...args);
-  return { app, windows, trays, intervals, handlers, ipcMain, event, send, screen, display, opened, Menu,
+  return { app, windows, trays, intervals, handlers, ipcMain, event, send, screen, display, opened, Menu, watchers, belowCalls,
     readCount: () => cursorReads,
-    foreground: (value) => { desktopForeground = value; for (const timer of intervals.values()) timer.callback(); },
-    cover: (panel) => covered.add(windows.find((win) => win.panel === panel)),
+    foreground: (value) => { setContext(value); for (const timer of intervals.values()) timer.callback(); },
+    desktopEvent: (value) => { setContext(value); for (const watcher of watchers) if (watcher.active) watcher.callback(); },
+    cover: (panel) => { const win = windows.find(win => win.panel === panel); if (!win.nativeTopmost) covered.add(win); },
     isCovered: (win) => covered.has(win),
     cursor: (x, y) => { cursor = { x, y }; for (const timer of intervals.values()) timer.callback(); },
     load: () => windows.forEach((win) => win.webContents.emit('did-finish-load')),
@@ -155,7 +181,7 @@ test('Windows keeps both panel regions immediately clickable without cursor poll
   assert.deepEqual(widget.shape, [{ x: 6, y: 6, width: 109, height: 109 }, { x: 396, y: 396, width: 208, height: 108 }]);
   assert.deepEqual(schedule.shape, [{ x: 130, y: 6, width: 108, height: 108 }]);
   assert.equal(widget.ignoreMouse, false); assert.equal(schedule.ignoreMouse, false);
-  assert.deepEqual([...env.intervals.values()].map((timer) => timer.delay), [250]);
+  assert.deepEqual([...env.intervals.values()].map((timer) => timer.delay), [1000]);
   assert.equal(env.readCount(), 0, 'native hit regions do not depend on a stale cursor position');
   assert.ok(env.windows.every((win) => !win.focused));
   const changes = widget.shapeChanges;
@@ -176,7 +202,7 @@ test('Windows modals and pointer capture own the full input surface and release 
   env.invoke('set-pin', 'widget', true);
   env.send('report-schedule-bounds', rect(200, 10, 100, 100, { modal: true }));
   assert.deepEqual(schedule.shape, []); assert.equal(widget.ignoreMouse, true);
-  assert.equal(schedule.topMoves, 1);
+  assert.ok(schedule.topOrder > widget.topOrder, 'the modal must be above its pinned sibling');
   assert.equal(schedule.isAlwaysOnTop(), true, 'the modal is visible above a pinned sibling');
   assert.deepEqual(plain(env.invoke('get-pins')), { widget: true, schedule: false }, 'temporary modal elevation preserves user choices');
   env.send('report-schedule-bounds', rect(200, 10));
@@ -196,42 +222,36 @@ test('Windows renderer crash drops its input region until explicit recovery and 
   widget.webContents.emit('render-process-gone');
   assert.equal(widget.visible, false); assert.equal(widget.ignoreMouse, true);
   assert.equal(schedule.ignoreMouse, false);
-  assert.deepEqual([...env.intervals.values()].map((timer) => timer.delay), [250]);
+  assert.deepEqual([...env.intervals.values()].map((timer) => timer.delay), [1000]);
   env.app.emit('second-instance'); widget.webContents.emit('did-finish-load');
   assert.equal(widget.ignoreMouse, true, 'a recovered page has no input until its fresh bounds arrive');
   env.send('report-widget-bounds', rect(40, 40));
   assert.equal(widget.ignoreMouse, false); assert.deepEqual(widget.shape, [{ x: 36, y: 36, width: 108, height: 108 }]);
 });
 
-test('Windows desktop reveal raises visible panels once without changing focus or pin choices', async () => {
+test('Windows desktop context keeps panels above the desktop while preserving modal order and pins', async () => {
   const env = await desktop({ platform: 'win32' }); env.load();
   const [widget, schedule] = env.windows;
   env.send('report-widget-bounds', rect()); env.send('report-schedule-bounds', rect(200, 10));
   env.invoke('set-pin', 'schedule', true);
-  env.foreground(true);
-  assert.equal(widget.topMoves, 1); assert.equal(schedule.topMoves, 1);
-  assert.ok(env.windows.every((win) => !win.focused));
+  env.foreground('desktop');
+  assert.ok(env.windows.every(win => win.isAlwaysOnTop() && !win.focused));
   assert.deepEqual(plain(env.invoke('get-pins')), { widget: false, schedule: true });
-  env.foreground(true); env.foreground(true);
-  assert.equal(widget.topMoves, 1, 'remaining on the desktop must not fight normal window stacking');
-  env.foreground(false);
-  assert.equal(widget.topMoves, 1, 'ordinary foreground applications must not be covered');
-  env.foreground(true);
-  assert.equal(widget.topMoves, 2);
-  env.foreground(false);
+  env.foreground('other');
+  assert.equal(widget.isAlwaysOnTop(), false);
+  assert.equal(widget.belowForeground, true);
+  assert.equal(schedule.isAlwaysOnTop(), true, 'the user-pinned panel stays above normal applications');
   env.send('report-widget-bounds', rect(10, 10, 100, 100, { modal: true }));
-  env.foreground(true);
-  assert.ok(widget.topOrder > schedule.topOrder, 'desktop reveal keeps the modal above its pinned sibling');
+  env.foreground('desktop');
+  assert.ok(widget.topOrder > schedule.topOrder, 'the modal stays above its pinned sibling');
   env.trays[0].emit('click');
   assert.equal(env.intervals.size, 0);
-  env.foreground(true);
-  assert.ok(env.windows.every((win) => !win.visible));
+  assert.ok(env.windows.every(win => !win.visible));
   env.trays[0].emit('click');
-  assert.ok(widget.topOrder > schedule.topOrder, 'tray restore also shows the modal last');
+  assert.ok(widget.topOrder > schedule.topOrder, 'tray restore also keeps the modal last');
   env.app.emit('before-quit');
   assert.equal(env.intervals.size, 0);
 });
-
 test('Windows restores system minimization without reviving disabled, crashed or deliberately hidden panels', async () => {
   const env = await desktop({ platform: 'win32' }); env.load();
   const [widget, schedule] = env.windows;
@@ -247,78 +267,215 @@ test('Windows restores system minimization without reviving disabled, crashed or
   assert.equal(widget.visible, false); assert.equal(env.intervals.size, 0);
 });
 
-test('Windows restores repeated desktop reveals only when the desktop actually covers a panel', async () => {
+test('Windows panel to NULL to desktop transitions retain the native band without repeated positioning', async () => {
   const env = await desktop({ platform: 'win32' }); env.load();
-  const [widget, schedule] = env.windows;
   env.send('report-widget-bounds', rect()); env.send('report-schedule-bounds', rect(200, 10));
-  env.foreground(true);
-  assert.equal(widget.topMoves, 1);
-  env.cover('schedule');
-  env.foreground(true);
-  assert.equal(widget.topMoves, 2); assert.equal(schedule.topMoves, 2, 'same foreground desktop can cover panels again');
-  env.foreground(true);
-  assert.equal(widget.topMoves, 2, 'visible panels are not re-stacked every timer tick');
-  env.cover('widget');
-  env.foreground(false);
-  assert.equal(widget.topMoves, 2, 'a foreground ordinary app must remain above an unpinned panel');
-});
-
-test('Windows desktop recovery uses a temporary topmost pulse when ordinary raising fails', async () => {
-  const env = await desktop({ platform: 'win32', moveTopFails: true }); env.load();
-  env.send('report-widget-bounds', rect()); env.send('report-schedule-bounds', rect(200, 10));
-  env.cover('widget'); env.cover('schedule');
-  env.foreground(true);
-  for (const win of env.windows) {
-    assert.equal(env.isCovered(win), false, `${win.panel} must recover even when moveTop has no effect`);
-    assert.deepEqual(win.pinCalls.map(call => call.value), [true, false], 'temporary topmost state is removed synchronously');
-    assert.equal(win.pinCalls[0].level, 'pop-up-menu', 'recovery must avoid the Windows floating-level fallback');
-    assert.equal(win.isAlwaysOnTop(), false);
-    assert.equal(win.visible, true);
-    assert.ok(!win.focused, 'desktop recovery must not activate either panel');
+  env.desktopEvent('panel');
+  const calls = env.windows.map(win => win.pinCalls.length);
+  const stacking = env.windows.map(win => [win.topMoves, win.raised, win.topOrder]);
+  for (const context of [null, 'desktop', 'panel', null, 'desktop']) {
+    env.cover('widget'); env.cover('schedule');
+    env.desktopEvent(context);
+    assert.ok(env.windows.every(win => win.isAlwaysOnTop() && !env.isCovered(win) && !win.focused));
   }
+  assert.deepEqual(env.windows.map(win => win.pinCalls.length), calls, 'stable desktop/panel context needs no native band round trips');
+  assert.deepEqual(env.windows.map(win => [win.topMoves, win.raised, win.topOrder]), stacking);
   assert.deepEqual(plain(env.invoke('get-pins')), { widget: false, schedule: false });
-  env.foreground(true);
-  assert.ok(env.windows.every(win => win.pinCalls.length === 2), 'recovered panels need no further pulses');
+});
+test('Windows native context events restore visibility immediately and repeated events do not restack panels', async () => {
+  const env = await desktop({ platform: 'win32' }); env.load();
+  env.send('report-widget-bounds', rect()); env.send('report-schedule-bounds', rect(200, 10));
+  assert.equal(env.watchers.length, 1, 'both panels share one shell subscription');
+  assert.deepEqual([...env.intervals.values()].map(timer => timer.delay), [1000]);
+  env.cover('widget'); env.cover('schedule');
+  env.desktopEvent('desktop');
+  assert.ok(env.windows.every(win => !env.isCovered(win) && win.isAlwaysOnTop() && !win.focused),
+    'the native callback restores both panels without advancing any timer');
+  const calls = env.windows.map(win => win.pinCalls.length);
+  env.desktopEvent('desktop'); env.desktopEvent('desktop');
+  assert.deepEqual(env.windows.map(win => win.pinCalls.length), calls);
+  assert.ok(env.windows.every(win => !win.topMoves), 'context handling never calls moveTop');
+  env.desktopEvent('other');
+  assert.ok(env.windows.every(win => !win.isAlwaysOnTop() && win.belowForeground && !win.topMoves));
 });
 
-test('Windows desktop fallback preserves a real pin and a temporary modal boost', async () => {
-  const env = await desktop({ platform: 'win32', moveTopFails: true }); env.load();
+test('Windows repairs a lost native topmost flag even when Electron still caches true', async () => {
+  const env = await desktop({ platform: 'win32' }); env.load();
+  env.send('report-widget-bounds', rect()); env.send('report-schedule-bounds', rect(200, 10));
+  env.desktopEvent('desktop');
+  const calls = env.windows.map(win => win.pinCalls.length);
+  const shown = env.windows.map(win => win.raised);
+  for (const win of env.windows) {
+    win.nativeTopmost = false;
+    env.cover(win.panel);
+    assert.equal(win.isAlwaysOnTop(), true, 'the Electron cache survives native flag loss');
+  }
+  env.desktopEvent('desktop');
+  for (const [index, win] of env.windows.entries()) {
+    assert.equal(win.nativeTopmost, true, 'native fallback repairs the ineffective cached setter');
+    assert.equal(env.isCovered(win), false);
+    assert.deepEqual(win.nativePinCalls, [true], 'repair does not pulse back to the non-topmost band');
+    assert.deepEqual(win.pinCalls.slice(calls[index]), [{ value: true, level: 'pop-up-menu' }]);
+    assert.ok(!win.focused && !win.topMoves);
+  }
+  env.desktopEvent('desktop');
+  assert.deepEqual(env.windows.map(win => win.pinCalls.length), calls.map(count => count + 1), 'the repaired state needs no repeated setter');
+  assert.deepEqual(env.windows.map(win => win.raised), shown, 'repair does not re-show panels');
+  assert.deepEqual(plain(env.invoke('get-pins')), { widget: false, schedule: false });
+  env.desktopEvent('other');
+  assert.ok(env.windows.every(win => !win.isAlwaysOnTop() && !win.nativeTopmost && win.belowForeground && !win.focused));
+  for (const win of env.windows) win.nativeTopmost = true;
+  env.desktopEvent('other');
+  assert.ok(env.windows.every(win => !win.nativeTopmost && win.belowForeground && !win.focused && !win.topMoves),
+    'a stale false cache also cannot leave an unpinned panel above ordinary apps');
+  assert.deepEqual(env.windows.map(win => win.nativePinCalls), [[true, false], [true, false]]);
+  assert.deepEqual(env.windows.map(win => win.raised), shown);
+});
+
+test('Windows Pin reports native refusal instead of the Electron cached request', async () => {
+  const env = await desktop({ platform: 'win32', nativeTopmostFails: true }); env.load();
+  env.send('report-widget-bounds', rect());
+  const [widget] = env.windows;
+  assert.deepEqual(plain(env.invoke('set-pin', 'widget', true)), { widget: false, schedule: false });
+  assert.equal(widget.nativeTopmost, false);
+  assert.deepEqual(widget.nativePinCalls, [true], 'the direct native fallback was attempted');
+  assert.deepEqual(plain(env.invoke('get-pins')), { widget: false, schedule: false });
+  assert.ok(!widget.focused);
+});
+test('Windows stops shell subscriptions on hide, quit or all renderer crashes and ignores stale callbacks', async () => {
+  for (const reason of ['hide', 'quit', 'crash']) {
+    const env = await desktop({ platform: 'win32' }); env.load();
+    env.send('report-widget-bounds', rect()); env.send('report-schedule-bounds', rect(200, 10));
+    env.desktopEvent(true);
+    const watcher = env.watchers[0];
+    if (reason === 'hide') env.trays[0].emit('click');
+    else if (reason === 'quit') env.app.emit('before-quit');
+    else env.windows.forEach(win => win.webContents.emit('render-process-gone'));
+    assert.equal(watcher.disposals, 1, `${reason} releases the shell subscription exactly once`);
+    assert.equal(watcher.active, false);
+    assert.equal(env.intervals.size, 0);
+    const state = env.windows.map(win => [win.visible, win.topMoves, win.raised, win.pinCalls.length]);
+    env.cover('widget'); env.cover('schedule'); watcher.callback();
+    assert.deepEqual(env.windows.map(win => [win.visible, win.topMoves, win.raised, win.pinCalls.length]), state,
+      `${reason} must make a late native callback harmless`);
+    if (reason === 'hide') {
+      env.trays[0].emit('click');
+      assert.equal(env.watchers.length, 2, 'an explicit show installs a fresh subscription');
+      assert.equal(env.watchers.filter(item => item.active).length, 1);
+    }
+  }
+});
+
+test('Windows keeps the 250ms recovery timer when native shell hooks are unavailable', async () => {
+  const env = await desktop({ platform: 'win32', watchFails: true }); env.load();
+  env.send('report-widget-bounds', rect()); env.send('report-schedule-bounds', rect(200, 10));
+  assert.equal(env.watchers.length, 1);
+  assert.deepEqual([...env.intervals.values()].map(timer => timer.delay), [250]);
+  env.cover('widget'); env.cover('schedule'); env.desktopEvent(true);
+  assert.ok(env.windows.every(win => env.isCovered(win)), 'a failed subscription cannot emit events');
+  env.foreground(true);
+  assert.ok(env.windows.every(win => !env.isCovered(win) && !win.focused), 'fallback polling still restores panels');
+  env.trays[0].emit('click');
+  assert.equal(env.intervals.size, 0);
+});
+
+test('Windows unpin during desktop context changes the user choice without dropping desktop visibility', async () => {
+  const env = await desktop({ platform: 'win32' }); env.load();
+  const [widget] = env.windows;
+  env.send('report-widget-bounds', rect()); env.send('report-schedule-bounds', rect(200, 10));
+  env.desktopEvent('desktop');
+  const calls = widget.pinCalls.length;
+  env.invoke('set-pin', 'widget', true);
+  assert.deepEqual(plain(env.invoke('get-pins')), { widget: true, schedule: false });
+  env.invoke('set-pin', 'widget', false);
+  assert.deepEqual(plain(env.invoke('get-pins')), { widget: false, schedule: false });
+  assert.equal(widget.isAlwaysOnTop(), true, 'native desktop boost must not be mistaken for user Pin');
+  assert.equal(widget.pinCalls.length, calls, 'unpinning cannot introduce a transient desktop occlusion');
+  env.desktopEvent('other');
+  assert.ok(env.windows.every(win => !win.isAlwaysOnTop() && win.belowForeground && !win.focused));
+});
+test('Windows leaving desktop context preserves real pins and modal boosts until the modal closes', async () => {
+  const env = await desktop({ platform: 'win32' }); env.load();
   const [widget, schedule] = env.windows;
   env.send('report-widget-bounds', rect()); env.send('report-schedule-bounds', rect(200, 10));
   env.invoke('set-pin', 'schedule', true);
   env.send('report-widget-bounds', rect(10, 10, 100, 100, { modal: true }));
-  const pinCalls = env.windows.map(win => win.pinCalls.slice());
-  env.cover('widget'); env.cover('schedule');
-  env.foreground(true);
-  assert.deepEqual(env.windows.map(win => win.pinCalls), pinCalls, 'an already-topmost window must never be pulsed back to normal');
+  env.desktopEvent('desktop');
+  const calls = env.windows.map(win => win.pinCalls.length);
+  env.desktopEvent('other');
   assert.ok(env.windows.every(win => win.isAlwaysOnTop() && !win.focused));
+  assert.deepEqual(env.windows.map(win => win.pinCalls.length), calls, 'leaving desktop must not cancel another source of topmost');
   assert.deepEqual(plain(env.invoke('get-pins')), { widget: false, schedule: true });
-  assert.ok(widget.topOrder > schedule.topOrder, 'the modal stays above its pinned sibling');
+  assert.equal(env.belowCalls.length, 0);
   env.send('report-widget-bounds', rect());
-  assert.equal(widget.isAlwaysOnTop(), false, 'closing the modal still restores its original state');
+  assert.equal(widget.isAlwaysOnTop(), false);
+  assert.equal(widget.belowForeground, true, 'the closed modal returns below the ordinary foreground app');
   assert.equal(schedule.isAlwaysOnTop(), true);
 });
 
-test('Windows desktop fallback does not raise or pulse over an ordinary foreground app', async () => {
-  const env = await desktop({ platform: 'win32', moveTopFails: true }); env.load();
+test('Windows desktop boost keeps an already-pinned modal above a newly boosted sibling', async () => {
+  const env = await desktop({ platform: 'win32' }); env.load();
+  const [widget, schedule] = env.windows;
   env.send('report-widget-bounds', rect()); env.send('report-schedule-bounds', rect(200, 10));
-  env.foreground(true);
-  const stacking = env.windows.map(win => [win.topMoves, win.raised]);
-  env.cover('widget'); env.cover('schedule');
-  env.foreground(false); env.foreground(false);
-  assert.deepEqual(env.windows.map(win => [win.topMoves, win.raised]), stacking);
-  assert.ok(env.windows.every(win => env.isCovered(win) && win.pinCalls.length === 0 && !win.focused));
+  env.invoke('set-pin', 'widget', true);
+  env.send('report-widget-bounds', rect(10, 10, 100, 100, { modal: true }));
+  assert.equal(widget.isAlwaysOnTop(), true);
+  assert.equal(schedule.isAlwaysOnTop(), false);
+  env.desktopEvent('desktop');
+  assert.ok(widget.isAlwaysOnTop() && schedule.isAlwaysOnTop());
+  assert.ok(widget.topOrder > schedule.topOrder, 'boosting the sibling must not cover the existing modal');
+  const order = env.windows.map(win => [win.topOrder, win.topMoves, win.pinCalls.length]);
+  env.desktopEvent('desktop'); env.desktopEvent('panel');
+  assert.deepEqual(env.windows.map(win => [win.topOrder, win.topMoves, win.pinCalls.length]), order,
+    'stable context events must not raise the modal again');
+  assert.deepEqual(plain(env.invoke('get-pins')), { widget: true, schedule: false });
 });
 
-test('Windows desktop recovery does not pulse when ordinary raising succeeds', async () => {
+test('Windows explicit show keeps an already-topmost schedule modal above the focused main panel', async () => {
+  const env = await desktop({ platform: 'win32' }); env.load();
+  const [widget, schedule] = env.windows;
+  env.send('report-widget-bounds', rect()); env.send('report-schedule-bounds', rect(200, 10));
+  env.invoke('set-pin', 'schedule', true);
+  env.desktopEvent('desktop');
+  env.send('report-schedule-bounds', rect(200, 10, 100, 100, { modal: true }));
+  assert.ok(schedule.topOrder > widget.topOrder);
+  const pins = env.windows.map(win => win.pinCalls.length);
+  env.app.emit('second-instance');
+  assert.ok(widget.focused, 'explicit show focuses the main panel');
+  assert.ok(schedule.topOrder > widget.topOrder, 'focusing the main panel must not cover the open schedule modal');
+  assert.deepEqual(env.windows.map(win => win.pinCalls.length), pins, 'restoring modal order must not toggle native bands');
+  assert.deepEqual(plain(env.invoke('get-pins')), { widget: false, schedule: true });
+});
+test('Windows ordinary foreground context demotes unpinned panels below it without activating or re-showing them', async () => {
   const env = await desktop({ platform: 'win32' }); env.load();
   env.send('report-widget-bounds', rect()); env.send('report-schedule-bounds', rect(200, 10));
-  env.cover('widget'); env.cover('schedule');
-  env.foreground(true);
-  assert.ok(env.windows.every(win => !env.isCovered(win) && win.pinCalls.length === 0 && !win.focused));
-  assert.deepEqual(plain(env.invoke('get-pins')), { widget: false, schedule: false });
+  env.desktopEvent('desktop');
+  const shown = env.windows.map(win => win.raised);
+  env.desktopEvent('other');
+  assert.deepEqual(env.windows.map(win => win.raised), shown);
+  assert.ok(env.windows.every(win => !win.isAlwaysOnTop() && win.belowForeground && !win.focused && !win.topMoves));
+  assert.equal(env.belowCalls.length, 2);
+  const calls = env.windows.map(win => win.pinCalls.length);
+  env.desktopEvent('other'); env.desktopEvent(null);
+  assert.deepEqual(env.windows.map(win => win.pinCalls.length), calls);
+  assert.equal(env.belowCalls.length, 2, 'ordinary app and NULL events cannot repeatedly reposition panels');
 });
-
+test('Windows hiding, crashing or disabling a panel releases its desktop boost', async () => {
+  for (const reason of ['hide', 'crash', 'disable']) {
+    const env = await desktop({ platform: 'win32' }); env.load();
+    const [widget, schedule] = env.windows;
+    env.send('report-widget-bounds', rect()); env.send('report-schedule-bounds', rect(200, 10));
+    env.desktopEvent('desktop');
+    assert.ok(env.windows.every(win => win.isAlwaysOnTop()));
+    if (reason === 'hide') env.trays[0].emit('click');
+    else if (reason === 'crash') schedule.webContents.emit('render-process-gone');
+    else env.send('report-schedule-bounds', rect(0, 0, 0, 0, { visible: false }));
+    assert.equal(schedule.visible, false);
+    assert.equal(schedule.isAlwaysOnTop(), false, reason + ' must release the now-hidden panel boost');
+    assert.equal(widget.isAlwaysOnTop(), reason !== 'hide');
+    assert.deepEqual(plain(env.invoke('get-pins')), { widget: false, schedule: false });
+  }
+});
 test('Windows explicit show restores both panel layers after focusing the main window', async () => {
   const env = await desktop({ platform: 'win32' }); env.load();
   env.send('report-widget-bounds', rect()); env.send('report-schedule-bounds', rect(200, 10));
@@ -328,7 +485,7 @@ test('Windows explicit show restores both panel layers after focusing the main w
   assert.ok(env.windows.every(win => win.visible && !env.isCovered(win)), 'the unfocused schedule must also rise above the desktop');
   assert.ok(env.windows[0].focused);
   assert.ok(!env.windows[1].focused);
-  assert.ok(env.windows.every(win => win.pinCalls.length === 0), 'explicit show does not change pins');
+  assert.deepEqual(plain(env.invoke('get-pins')), { widget: false, schedule: false }, 'explicit show leaves user Pin choices unchanged');
 });
 
 test('Windows restores hidden panels while the desktop stays foreground without a minimize event', async () => {
@@ -379,38 +536,51 @@ for (const pins of [
     const env = await desktop({ platform: 'win32' }); env.load();
     env.send('report-widget-bounds', rect()); env.send('report-schedule-bounds', rect(200, 10));
     for (const [panel, pinned] of Object.entries(pins)) env.invoke('set-pin', panel, pinned);
-    const verify = () => {
+    const verify = (desktopBoost) => {
       assert.deepEqual(plain(env.invoke('get-pins')), pins);
       for (const win of env.windows) {
         assert.equal(win.isVisible(), true, `${win.panel} remains available on the desktop`);
-        assert.equal(win.isAlwaysOnTop(), pins[win.panel], `${win.panel} keeps its native topmost choice`);
+        assert.equal(win.isAlwaysOnTop(), pins[win.panel] || desktopBoost, `${win.panel} applies user Pin separately from desktop boost`);
         assert.ok(!win.focused, 'desktop recovery must not take keyboard focus');
       }
     };
     env.foreground(true);
-    verify();
+    verify(true);
+    const bandChanges = env.windows.map(win => win.pinCalls.length);
     env.cover('widget'); env.cover('schedule'); env.foreground(true);
-    assert.ok(env.windows.every((win) => win.topMoves === 2), 'repeated desktop reveal restores both panels');
-    verify();
+    assert.ok(env.windows.every(win => !env.isCovered(win) && !win.topMoves), 'the continuous desktop band prevents repeat coverage');
+    assert.deepEqual(env.windows.map(win => win.pinCalls.length), bandChanges);
+    verify(true);
     for (const win of env.windows) { win.visible = false; win.emit('minimize'); }
-    verify();
+    verify(true);
     const stacking = env.windows.map((win) => [win.topMoves, win.raised]);
     env.foreground(false);
     env.cover('widget'); env.cover('schedule'); env.foreground(false);
     assert.deepEqual(env.windows.map((win) => [win.topMoves, win.raised]), stacking,
       'an ordinary foreground app does not trigger panel raising or re-showing');
-    verify();
+    verify(false);
+    for (const win of env.windows) if (!pins[win.panel]) assert.equal(win.belowForeground, true);
   });
 }
 
-function nativeDesktop() {
+function nativeDesktop({ failHook = 0, unhookFails = false, positionFails = false, positionIgnored = false } = {}) {
   const module = { exports: {} };
-  let front = 3, visits = 0;
+  let front = 3, visits = 0, nextImmediate = 0;
   const above = new Map([[1, 2], [2, 3], [3, 0]]);
   const classes = new Map([[2, 'WorkerW'], [3, 'OrdinaryApp']]);
-  const visible = new Set([3]);
+  const visible = new Set([3]), styles = new Map(), positions = [];
+  const hooks = [], unhooked = [], registered = new Set(), released = [], immediate = new Map();
   const native = {
     GetForegroundWindow: () => front,
+    GetDesktopWindow: () => 100,
+    GetWindowLongPtrW: (hwnd, index) => { assert.equal(index, -20); return styles.get(Number(hwnd)) || 0; },
+    SetWindowPos: (...args) => {
+      positions.push(args);
+      if (positionFails) return 0;
+      const [hwnd, after] = args, style = styles.get(Number(hwnd)) || 0;
+      if (!positionIgnored && (after === -1 || after === -2)) styles.set(Number(hwnd), after === -1 ? style | 8 : style & ~8);
+      return 1;
+    },
     GetWindow: (hwnd, command) => {
       assert.equal(command, 3);
       assert.ok(++visits <= 4096, 'cyclic native window order must not hang the app');
@@ -422,16 +592,39 @@ function nativeDesktop() {
       buffer.write(name, 'utf16le');
       return name.length;
     },
+    SetWinEventHook: (first, last, _module, callback, processId, threadId, flags) => {
+      assert.equal(processId, 0); assert.equal(threadId, 0);
+      assert.equal(flags & 4, 0, 'the JavaScript callback must remain out of process');
+      const handle = hooks.length + 1 === failHook ? 0 : hooks.length + 10;
+      hooks.push({ first, last, callback, handle });
+      return handle;
+    },
+    UnhookWinEvent: handle => { unhooked.push(handle); return Number(!unhookFails); },
   };
   vm.runInNewContext(fs.readFileSync(path.join(root, 'windows-desktop.cjs'), 'utf8'), {
     module, Buffer,
-    require: () => ({ load: () => ({ func: (declaration) => native[declaration.match(/(GetForegroundWindow|GetWindow|IsWindowVisible|GetClassNameW)\(/)[1]] }) }),
+    setImmediate: callback => { immediate.set(++nextImmediate, callback); return nextImmediate; },
+    clearImmediate: handle => immediate.delete(handle),
+    require: () => ({
+      load: () => ({ func: declaration => {
+        const name = declaration.match(/(\w+)\s*\(/)[1];
+        assert.ok(native[name], `unexpected native API ${name}`);
+        if (name === 'SetWindowPos') assert.match(declaration, /\bintptr_t after\b/, 'HWND_TOPMOST and HWND_NOTOPMOST require signed pointer sentinels');
+        return native[name];
+      } }),
+      proto: declaration => declaration,
+      pointer: type => type,
+      register: callback => { registered.add(callback); return callback; },
+      unregister: callback => { assert.ok(registered.delete(callback), 'a native callback is released only once'); released.push(callback); },
+    }),
   });
   const api = module.exports, handle = Buffer.alloc(8);
   handle.writeBigUInt64LE(1n);
-  return { api, handle, above, classes, visible,
+  return { api, handle, above, classes, visible, styles, positions, hooks, unhooked, registered, released, immediate,
     foreground: value => { front = value; },
     resetVisits: () => { visits = 0; }, visits: () => visits,
+    emit: (event, hwnd = 100, object = 0, child = 0) => hooks[0].callback(hooks[0].handle, event, hwnd, object, child, 1, 0),
+    flush: () => { const pending = [...immediate.values()]; immediate.clear(); pending.forEach(callback => callback()); },
   };
 }
 
@@ -457,6 +650,151 @@ test('Windows desktop Z-order detects the desktop beyond 600 intervening windows
   classes.set(702, 'WorkerW');
   visible.add(702);
   assert.equal(api.isDesktopAbove(handle), true, 'a desktop 701 steps above the panel must be detected');
+});
+
+test('Windows foreground context distinguishes desktop, own panels, ordinary apps and activation gaps', () => {
+  const env = nativeDesktop();
+  const handle32 = Buffer.alloc(4); handle32.writeUInt32LE(7);
+  const handles = [env.handle, handle32];
+  env.foreground(0);
+  assert.equal(env.api.foregroundContext(handles), null, 'no foreground must preserve the caller state');
+  for (const own of [1, 1n, 7]) {
+    env.foreground(own);
+    assert.equal(env.api.foregroundContext(handles), 'panel');
+  }
+  env.foreground(2);
+  assert.equal(env.api.foregroundContext(handles), 'desktop');
+  env.classes.set(4, 'Progman'); env.foreground(4);
+  assert.equal(env.api.foregroundContext(handles), 'desktop');
+  env.foreground(3);
+  assert.equal(env.api.foregroundContext(handles), 'other');
+});
+
+test('Windows positions below only an ordinary non-topmost foreground without activating or moving windows', () => {
+  const env = nativeDesktop();
+  const panel = Buffer.alloc(8); panel.writeBigUInt64LE(0x100000001n);
+  const handles = [panel, env.handle];
+  env.classes.set(4, 'Progman');
+  for (const foreground of [0, 2, 4, 1, 0x100000001n]) {
+    env.foreground(foreground);
+    env.api.placeBelowForeground(panel, handles);
+  }
+  env.foreground(3); env.styles.set(3, 8);
+  env.api.placeBelowForeground(panel, handles);
+  assert.equal(env.positions.length, 0, 'NULL, shell, own panels and topmost foreground apps must not be used as positioning targets');
+  env.styles.set(3, 0);
+  env.api.placeBelowForeground(panel, handles);
+  assert.equal(env.positions.length, 1);
+  assert.equal(env.positions[0][0], 0x100000001n, '64-bit HWNDs must not be truncated');
+  assert.equal(env.positions[0][1], 3, 'the ordinary foreground window is the insertion target');
+  assert.deepEqual(env.positions[0].slice(2), [0, 0, 0, 0, 0x213],
+    'positioning keeps size, location, activation and owner Z-order unchanged');
+});
+
+test('Windows native topmost reads the actual style and avoids positioning when it already matches', () => {
+  const { api, handle, styles, positions } = nativeDesktop();
+  styles.set(1, 0x80);
+  assert.equal(api.isTopmost(handle), false, 'other extended style bits do not imply topmost');
+  assert.equal(api.ensureTopmost(handle, false), false);
+  styles.set(1, 0x88);
+  assert.equal(api.isTopmost(handle), true);
+  assert.equal(api.ensureTopmost(handle, true), true);
+  assert.equal(positions.length, 0, 'matching native bands are not restacked');
+});
+
+test('Windows native topmost fallback uses signed sentinels and preserves activation, bounds and unrelated styles', () => {
+  const { api, handle, styles, positions } = nativeDesktop();
+  styles.set(1, 0x80);
+  assert.equal(api.ensureTopmost(handle, true), true);
+  assert.equal(styles.get(1), 0x88);
+  assert.equal(api.ensureTopmost(handle, false), false);
+  assert.equal(styles.get(1), 0x80);
+  assert.deepEqual(positions, [
+    [1n, -1, 0, 0, 0, 0, 0x213],
+    [1n, -2, 0, 0, 0, 0, 0x213],
+  ]);
+});
+
+test('Windows native topmost fallback returns readback when the OS rejects or ignores positioning', () => {
+  for (const options of [{ positionFails: true }, { positionIgnored: true }]) {
+    const { api, handle, styles, positions } = nativeDesktop(options);
+    assert.equal(api.ensureTopmost(handle, true), false, 'unsuccessful elevation cannot report the requested value');
+    styles.set(1, 8);
+    assert.equal(api.ensureTopmost(handle, false), true, 'unsuccessful demotion reports the band that remains');
+    assert.equal(positions.length, 2);
+  }
+});
+
+test('Windows native watcher filters shell events and releases both hooks on disposal', () => {
+  const env = nativeDesktop();
+  let notifications = 0;
+  const stop = env.api.watchChanges(() => notifications++);
+  assert.equal(typeof stop, 'function');
+  assert.deepEqual(env.hooks.map(hook => [hook.first, hook.last]), [[3, 3], [0x8002, 0x8004]]);
+  env.classes.set(4, 'Progman');
+  env.emit(3, 3); // Any foreground change must let the caller inspect current state.
+  env.emit(0x8002, 100);
+  env.emit(0x8004, 100, -4);
+  env.emit(0x8002, 2);
+  env.emit(0x8004, 4);
+  assert.equal(notifications, 5);
+  for (const event of [[0x8003, 100], [0x8001, 100], [0x8002, 3], [0x8004, 100, -1], [0x8002, 2, 0, 1], [0x8004, 0]]) {
+    env.emit(...event);
+  }
+  assert.equal(notifications, 5, 'non-shell windows, hide events and child objects do not trigger restoration');
+  stop(); stop();
+  assert.deepEqual(env.unhooked, env.hooks.map(hook => hook.handle));
+  assert.equal(env.registered.size, 0);
+  assert.equal(env.released.length, 1);
+  env.emit(3, 2); env.flush();
+  assert.equal(notifications, 5, 'a queued callback after disposal is harmless');
+});
+
+test('Windows native watcher coalesces reentrant events and defers release inside a callback', () => {
+  const env = nativeDesktop();
+  let notifications = 0;
+  const stop = env.api.watchChanges(() => {
+    notifications++;
+    if (notifications === 1) { env.emit(3, 2); env.emit(0x8004, 100); }
+  });
+  env.emit(3, 2);
+  assert.equal(notifications, 1, 'nested native events do not recursively restore windows');
+  assert.equal(env.immediate.size, 1, 'nested events share one pending follow-up');
+  env.flush();
+  assert.equal(notifications, 2);
+  stop();
+
+  const disposedInside = nativeDesktop();
+  let calls = 0;
+  const stopInside = disposedInside.api.watchChanges(() => {
+    calls++;
+    disposedInside.emit(3, 2);
+    stopInside();
+    assert.equal(disposedInside.registered.size, 1, 'the executing callback must not be freed while still on its stack');
+  });
+  disposedInside.emit(3, 2);
+  disposedInside.flush();
+  assert.equal(calls, 1, 'disposal cancels the queued nested restoration');
+  assert.equal(disposedInside.registered.size, 0, 'callback storage is released after the native invocation returns');
+  assert.equal(disposedInside.released.length, 1);
+});
+
+test('Windows native watcher rolls back partial registration and preserves callback storage if unhook fails', () => {
+  for (const failHook of [1, 2]) {
+    const env = nativeDesktop({ failHook });
+    assert.equal(env.api.watchChanges(() => assert.fail('failed subscriptions must never notify')), null);
+    assert.deepEqual(env.unhooked, env.hooks.filter(hook => hook.handle).map(hook => hook.handle));
+    assert.equal(env.registered.size, 0);
+    assert.equal(env.released.length, 1);
+    env.emit(3, 2);
+  }
+  const env = nativeDesktop({ unhookFails: true });
+  const stop = env.api.watchChanges(() => assert.fail('disposed subscriptions must never notify'));
+  stop();
+  assert.deepEqual(env.unhooked, env.hooks.map(hook => hook.handle), 'both hooks get an unhook attempt');
+  assert.equal(env.registered.size, 1, 'a callback Windows may still invoke cannot be freed');
+  assert.equal(env.released.length, 0);
+  env.emit(3, 2);
 });
 
 test('DOM pointer capture keeps a drag in its panel until released, and resets on hide or reload', async () => {
@@ -531,11 +869,12 @@ test('a crashed schedule stays hidden until recovery and fresh visible bounds ar
   assert.equal(schedule.visible, true);
 });
 
-test('Windows pinning recovers when the floating level silently loses native topmost state', async () => {
+test('Windows pinning directly uses the native level that preserves topmost state', async () => {
   const env = await desktop({ platform: 'win32', floatingPinFails: true }); env.load();
   assert.deepEqual(plain(env.invoke('set-pin', 'widget', true)), { widget: true, schedule: false });
   assert.equal(env.windows[0].level, 'pop-up-menu');
   assert.equal(env.windows[0].isAlwaysOnTop(), true);
+  assert.deepEqual(env.windows[0].pinCalls, [{ value: true, level: 'pop-up-menu' }], 'pinning never enters the problematic floating level');
   assert.deepEqual(plain(env.invoke('set-pin', 'widget', false)), { widget: false, schedule: false });
 });
 

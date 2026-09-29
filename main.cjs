@@ -21,9 +21,9 @@ const nativeHitTesting = process.platform === 'win32';
 const inputRegions = new WeakMap();
 const windowsDesktop = nativeHitTesting ? require('./windows-desktop.cjs') : null;
 let desktopTimer = null;
-let desktopWasForeground = false;
+let stopDesktopWatch = null;
+let desktopActive = false;
 let modalPanel = null;
-let modalTemporarilyPinned = false;
 
 const trayText = {
   'zh-CN': { show: '显示主线 · 支线', hide: '隐藏窗口', quit: '退出' },
@@ -59,7 +59,11 @@ function showWindow() {
   }
   syncWindowVisibility();
   if (isVisible(mainWindow)) mainWindow.focus();
-  if (nativeHitTesting) raiseVisiblePanels();
+  if (nativeHitTesting) {
+    syncDesktopStacking();
+    const modal = panelWindow(modalPanel);
+    if (isVisible(modal)) modal.moveTop();
+  }
 }
 
 function toggleWindow() {
@@ -101,54 +105,58 @@ function updateWindowState() {
   }
   const watchDesktop = nativeHitTesting && !isQuitting && windowsShown &&
     (readyPanels.has('widget') || (readyPanels.has('schedule') && lastScheduleBounds?.visible));
-  if (watchDesktop && desktopTimer === null) desktopTimer = setInterval(restoreOnDesktop, 250);
+  if (watchDesktop && desktopTimer === null) {
+    stopDesktopWatch = windowsDesktop.watchChanges(syncDesktopStacking);
+    // Native events handle normal desktop transitions immediately. Poll only
+    // as a recovery fallback, or at the old rate if hooks are unavailable.
+    desktopTimer = setInterval(syncDesktopStacking, stopDesktopWatch ? 1000 : 250);
+    syncDesktopStacking();
+  }
   else if (!watchDesktop && desktopTimer !== null) {
     clearInterval(desktopTimer);
     desktopTimer = null;
-    desktopWasForeground = false;
+    stopDesktopWatch?.();
+    stopDesktopWatch = null;
+    desktopActive = false;
   }
   updateTrayMenu();
   routePointerToPanel();
 }
 
-function restoreOnDesktop() {
-  const onDesktop = windowsDesktop.isDesktopForeground();
-  const hidden = onDesktop && windowsShown && panels.some((panel) => {
+function nativePanelHandles() {
+  return panels.map(panelWindow).filter(win => win && !win.isDestroyed()).map(win => win.getNativeWindowHandle());
+}
+
+function syncDesktopStacking() {
+  if (isQuitting || !windowsShown) return;
+  const context = windowsDesktop.foregroundContext(nativePanelHandles());
+  // Retain the previous state during the brief NULL foreground in activation.
+  if (context !== null) desktopActive = context === 'desktop' || context === 'panel';
+  syncNativeTopmost();
+  const hidden = context === 'desktop' && panels.some((panel) => {
     const win = panelWindow(panel);
     return win && !win.isDestroyed() && readyPanels.has(panel) &&
       (panel === 'widget' || lastScheduleBounds?.visible) && !win.isVisible();
   });
-  const covered = onDesktop && panels.some((panel) => {
-    const win = panelWindow(panel);
-    return isVisible(win) && windowsDesktop.isDesktopAbove(win.getNativeWindowHandle());
-  });
-  if (onDesktop && (!desktopWasForeground || hidden || covered)) {
-    // Win+D can put Explorer above a non-minimizable window without hiding it.
-    // Raise on desktop entry or actual occlusion, including repeated Win+D.
-    // Normal apps stay above unpinned panels; no keyboard focus is taken.
-    syncWindowVisibility();
-    raiseVisiblePanels();
-  }
-  desktopWasForeground = onDesktop;
+  if (hidden) syncWindowVisibility();
 }
 
-function raiseVisiblePanels() {
+function syncNativeTopmost() {
+  let raised = false;
   for (const panel of panelStackingOrder()) {
     const win = panelWindow(panel);
-    if (!isVisible(win)) continue;
-    win.moveTop();
-    // Explorer can remain above HWND_TOP. A synchronous topmost round trip
-    // re-enters the normal window band without changing the user's Pin state.
-    // Preserve existing native topmost, including a modal's temporary Pin.
-    if (!win.isAlwaysOnTop() && windowsDesktop.isDesktopForeground() &&
-        windowsDesktop.isDesktopAbove(win.getNativeWindowHandle())) {
-      try {
-        win.setAlwaysOnTop(true, 'pop-up-menu');
-      } finally {
-        win.setAlwaysOnTop(false);
-      }
-    }
+    if (!win || win.isDestroyed()) continue;
+    const modalBoost = modalPanel === panel && panels.some(name => name !== panel && pinned[name] && isVisible(panelWindow(name)));
+    const wanted = pinned[panel] || (windowsShown && isVisible(win) && (desktopActive || modalBoost));
+    const handle = win.getNativeWindowHandle();
+    if (win.isAlwaysOnTop() === wanted && windowsDesktop.isTopmost(handle) === wanted) continue;
+    win.setAlwaysOnTop(wanted, 'pop-up-menu');
+    const actual = windowsDesktop.ensureTopmost(handle, wanted);
+    raised ||= wanted && actual;
+    if (!wanted) windowsDesktop.placeBelowForeground(handle, nativePanelHandles());
   }
+  const modal = panelWindow(modalPanel);
+  if (raised && isVisible(modal) && modal.isAlwaysOnTop()) modal.moveTop();
 }
 
 function createTray() {
@@ -227,19 +235,11 @@ function updateInputRegions() {
   const bounds = { widget: lastWidgetBounds, schedule: lastScheduleBounds };
   const modal = panels.find((name) => bounds[name]?.modal && isVisible(panelWindow(name))) || null;
   if (modal !== modalPanel) {
-    const previous = panelWindow(modalPanel);
-    if (modalTemporarilyPinned && previous && !previous.isDestroyed()) previous.setAlwaysOnTop(pinned[modalPanel], 'pop-up-menu');
     modalPanel = modal;
-    modalTemporarilyPinned = false;
-    if (modal) {
-      const win = panelWindow(modal);
-      if (!pinned[modal] && panels.some((name) => name !== modal && pinned[name])) {
-        win.setAlwaysOnTop(true, 'pop-up-menu');
-        modalTemporarilyPinned = true;
-      }
-      win.moveTop();
-    }
+    syncNativeTopmost();
+    if (modal) panelWindow(modal).moveTop();
   }
+  else syncNativeTopmost();
   const owner = capturedPanel || modal;
   for (const panel of panels) {
     const win = panelWindow(panel);
@@ -367,13 +367,17 @@ else {
   ipcMain.handle('desktop:set-pin', (event, panel, enabled) => {
     const win = panelWindow(panel);
     if (!ownsEvent(event) || !win || win.isDestroyed()) return { ...pinned };
-    win.setAlwaysOnTop(!!enabled, 'floating');
-    // On Windows, placing a floating window behind a non-topmost taskbar can
-    // silently remove its topmost flag. Fall back only when that actually occurs.
-    if (enabled && process.platform === 'win32' && !win.isAlwaysOnTop()) win.setAlwaysOnTop(true, 'pop-up-menu');
-    pinned[panel] = win.isAlwaysOnTop();
+    if (nativeHitTesting) {
+      // User Pin is independent of the temporary desktop/modal topmost band.
+      pinned[panel] = !!enabled;
+      syncNativeTopmost();
+      if (enabled && !windowsDesktop.isTopmost(win.getNativeWindowHandle())) pinned[panel] = false;
+    } else {
+      win.setAlwaysOnTop(!!enabled, 'floating');
+      pinned[panel] = win.isAlwaysOnTop();
+    }
     // Re-stack each transparent panel after removing its topmost band without taking focus.
-    if (!pinned[panel] && win.isVisible()) win.showInactive();
+    if (!nativeHitTesting && !pinned[panel] && win.isVisible()) win.showInactive();
     routePointerToPanel();
     return { ...pinned };
   });
@@ -454,6 +458,8 @@ else {
     interactionTimer = null;
     if (desktopTimer !== null) clearInterval(desktopTimer);
     desktopTimer = null;
+    stopDesktopWatch?.();
+    stopDesktopWatch = null;
   });
   app.on('window-all-closed', () => {});
 }

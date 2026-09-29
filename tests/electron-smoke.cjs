@@ -25,9 +25,18 @@ async function main() {
     const schedule = app.windows().find((page) => page.url().includes('panel=schedule'));
     assert.ok(widget && schedule, 'both panel pages loaded');
     for (const page of [widget, schedule]) await page.waitForFunction(() => window.desktopBridge && document.getElementById('schedule-grid').children.length > 0);
-    const nativeWindows = () => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((win) => ({
-      panel: new URL(win.webContents.getURL()).searchParams.get('panel'), visible: win.isVisible(), pinned: win.isAlwaysOnTop(),
-    })).sort((a, b) => a.panel.localeCompare(b.panel)));
+    const nativeWindows = async () => {
+      const pins = await widget.evaluate(() => window.desktopBridge.getPins());
+      const windows = await app.evaluate(({ BrowserWindow }) => {
+        const desktop = process.platform === 'win32' ? globalThis.taskboardTestRequire('./windows-desktop.cjs') : null;
+        return BrowserWindow.getAllWindows().map((win) => ({
+          panel: new URL(win.webContents.getURL()).searchParams.get('panel'), visible: win.isVisible(),
+          topmost: desktop ? desktop.isTopmost(win.getNativeWindowHandle()) : win.isAlwaysOnTop(),
+        })).sort((a, b) => a.panel.localeCompare(b.panel));
+      });
+      for (const win of windows) if (pins[win.panel]) assert.ok(win.topmost, 'a user-pinned window must really be topmost');
+      return windows.map(({ panel, visible }) => ({ panel, visible, pinned: pins[panel] }));
+    };
     await expect.poll(nativeWindows).toEqual([
       { panel: 'schedule', visible: false, pinned: false }, { panel: 'widget', visible: true, pinned: false },
     ]);
@@ -116,8 +125,64 @@ async function main() {
     await widget.evaluate(() => window.desktopBridge.setPin('widget', false));
     await schedule.evaluate(() => window.desktopBridge.setPin('schedule', false));
     if (process.platform === 'win32') {
+      // A separate ordinary window must cover both unpinned panels after the
+      // desktop boost is removed. Native false alone does not prove the Z-order.
+      await app.evaluate(async ({ BrowserWindow }) => {
+        const win = new BrowserWindow({ width: 400, height: 240, show: false, title: 'Taskboard smoke foreground app' });
+        globalThis.taskboardTestForeground = win;
+        await win.loadURL('data:text/html,<title>Taskboard smoke foreground app</title><p>Temporary foreground window</p>');
+        win.show();
+      });
+      await expect.poll(() => app.evaluate(({ BrowserWindow }) => {
+        const front = globalThis.taskboardTestForeground;
+        const getPrevious = globalThis.taskboardTestRequire('koffi').load('user32.dll')
+          .func('uintptr_t __stdcall GetWindow(uintptr_t hwnd, unsigned int command)');
+        const frontHandle = String(front.getNativeWindowHandle().readBigUInt64LE());
+        return BrowserWindow.getAllWindows().filter(win => win !== front).every(win => {
+          if (win.isAlwaysOnTop()) return false;
+          let hwnd = win.getNativeWindowHandle().readBigUInt64LE();
+          const visited = new Set();
+          while (hwnd && !visited.has(String(hwnd))) {
+            visited.add(String(hwnd)); hwnd = getPrevious(hwnd, 3);
+            if (String(hwnd) === frontHandle) return true;
+          }
+          return false;
+        });
+      })).toBe(true);
+      assert.deepEqual(await widget.evaluate(() => window.desktopBridge.getPins()), { widget: false, schedule: false });
+      await app.evaluate(() => globalThis.taskboardTestForeground.destroy());
+      // Exercise persistent native callbacks in Electron's actual message loop.
+      await app.evaluate(({ BrowserWindow }) => {
+        const windows = BrowserWindow.getAllWindows();
+        windows.find(win => win.webContents.getURL().includes('panel=widget')).focus();
+        globalThis.taskboardNativeEvents = 0;
+        globalThis.taskboardStopNativeWatch = globalThis.taskboardTestRequire('./windows-desktop.cjs')
+          .watchChanges(() => { globalThis.taskboardNativeEvents++; });
+        if (!globalThis.taskboardStopNativeWatch) throw new Error('Native desktop event hooks were not installed');
+        windows.find(win => win.webContents.getURL().includes('panel=schedule')).focus();
+      });
+      await expect.poll(() => app.evaluate(() => globalThis.taskboardNativeEvents)).toBeGreaterThan(0);
+      assert.equal(await app.evaluate(async ({ BrowserWindow }) => {
+        globalThis.taskboardStopNativeWatch();
+        const count = globalThis.taskboardNativeEvents;
+        BrowserWindow.getAllWindows().find(win => win.webContents.getURL().includes('panel=widget')).focus();
+        await new Promise(resolve => setTimeout(resolve, 100));
+        return globalThis.taskboardNativeEvents === count;
+      }), true, 'unhooked native callbacks must not run on subsequent foreground changes');
       await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((win) => win.webContents.getURL().includes('panel=schedule')).focus());
       await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((win) => win.webContents.getURL().includes('panel=schedule')).isFocused())).toBe(true);
+      // Simulate an OS-level demotion without changing Chromium's requested
+      // level. The native state must be repaired even if its cached value differs.
+      await app.evaluate(({ BrowserWindow }) => {
+        const win = BrowserWindow.getAllWindows().find(item => item.webContents.getURL().includes('panel=widget'));
+        const setPosition = globalThis.taskboardTestRequire('koffi').load('user32.dll')
+          .func('int __stdcall SetWindowPos(uintptr_t hwnd, intptr_t after, int x, int y, int width, int height, unsigned int flags)');
+        if (!setPosition(win.getNativeWindowHandle().readBigUInt64LE(), -2, 0, 0, 0, 0, 0x213)) throw new Error('Cannot inject native demotion');
+      });
+      await expect.poll(() => app.evaluate(({ BrowserWindow }) => {
+        const desktop = globalThis.taskboardTestRequire('./windows-desktop.cjs');
+        return BrowserWindow.getAllWindows().every(win => desktop.isTopmost(win.getNativeWindowHandle()));
+      })).toBe(true);
       await app.evaluate(({ BrowserWindow }) => {
         const win = BrowserWindow.getAllWindows().find((item) => item.webContents.getURL().includes('panel=widget'));
         win.minimize();
@@ -125,7 +190,8 @@ async function main() {
       await expect.poll(() => app.evaluate(({ BrowserWindow }) => {
         const win = BrowserWindow.getAllWindows().find((item) => item.webContents.getURL().includes('panel=widget'));
         return { visible: win.isVisible(), minimized: win.isMinimized(), focused: win.isFocused(), pinned: win.isAlwaysOnTop() };
-      })).toEqual({ visible: true, minimized: false, focused: false, pinned: false });
+      })).toEqual({ visible: true, minimized: false, focused: false, pinned: true });
+      assert.deepEqual(await widget.evaluate(() => window.desktopBridge.getPins()), { widget: false, schedule: false }, 'desktop boosts must not turn on user Pin');
     }
     const bounds = await widget.evaluate(() => window.desktopBridge.getWidgetBounds());
     assert.ok(bounds.width > 0 && bounds.height > 0, 'renderer bounds reach the native process');
@@ -145,7 +211,7 @@ async function main() {
       { panel: 'schedule', visible: false, pinned: false }, { panel: 'widget', visible: true, pinned: false },
     ]);
     assert.deepEqual(errors, [], 'no uncaught errors in Electron renderers');
-    console.log('Electron smoke passed: isolated profile, preload/IPC, tasks/courses, settings sync, docking, schedule drag and native input release, independent pins, native visibility, minimize recovery, hidden reload and restore.');
+    console.log('Electron smoke passed: isolated profile, preload/IPC, tasks/courses, settings sync, docking, schedule drag and native input release, independent pins, native visibility, native event subscription/unhook, minimize recovery, hidden reload and restore.');
     console.log('Physical first clicks, Win+D, login changes, reboot, tray clicks and macOS behavior require manual validation.');
   } finally {
     if (app) await app.close();

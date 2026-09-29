@@ -47,12 +47,14 @@ npm start
 
 有桌面会话时可另运行 `npm run test:electron`，使用临时独立数据目录验证真实 Electron 窗口和跨窗口同步。
 
-Windows 安装包使用 `npm run dist:win` 构建。macOS 通用包由 macOS GitHub Actions 生成图标后构建。主题原图保留在仓库，发布包只包含应用实际使用的背景、校徽和许可文件。
+Windows 本地验证使用 `npm run pack:win`，只生成 `dist/win-unpacked` 运行目录，不制作安装包。直接更新已安装目录时先退出应用，将同次构建的程序文件一起更新；用户数据保留在原数据目录。Windows 安装包使用 `npm run dist:win` 构建。macOS 通用包由 macOS GitHub Actions 生成图标后构建。主题原图保留在仓库，发布包只包含应用实际使用的背景、校徽和许可文件。
 
 Windows 的系统桌面检测使用固定版本 Koffi，原生模块随安装包提供，无需另装运行环境；macOS 包排除该模块。网页依然没有运行依赖。
 
 ## 版本管理
 
 日常改动使用独立分支和 PR；推送及 PR 均自动执行测试。版本变更同时更新 `package.json`、`package-lock.json` 和 [CHANGELOG.md](CHANGELOG.md)。
+
+开发阶段先同步本地程序和 GitHub，使用开发版本号验证；收到明确的发布确认后，再制作安装包、创建正式版本标签和发布 Release。
 
 合并并确认检查通过后，为对应提交创建与包版本一致的 `v*` 标签。发布流程先运行全部自动测试、校验标签，再构建 Windows / macOS 安装包；两个构建均成功后发布 GitHub Release。手动从分支运行只生成构建产物，不发布 Release。旧标签保持不变，修复版本使用新标签。
