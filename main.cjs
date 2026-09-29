@@ -112,11 +112,16 @@ function updateWindowState() {
 
 function restoreOnDesktop() {
   const onDesktop = windowsDesktop.isDesktopForeground();
+  const hidden = onDesktop && windowsShown && panels.some((panel) => {
+    const win = panelWindow(panel);
+    return win && !win.isDestroyed() && readyPanels.has(panel) &&
+      (panel === 'widget' || lastScheduleBounds?.visible) && !win.isVisible();
+  });
   const covered = onDesktop && panels.some((panel) => {
     const win = panelWindow(panel);
     return isVisible(win) && windowsDesktop.isDesktopAbove(win.getNativeWindowHandle());
   });
-  if (onDesktop && (!desktopWasForeground || covered)) {
+  if (onDesktop && (!desktopWasForeground || hidden || covered)) {
     // Win+D can put Explorer above a non-minimizable window without hiding it.
     // Raise on desktop entry or actual occlusion, including repeated Win+D.
     // Normal apps stay above unpinned panels; no keyboard focus is taken.

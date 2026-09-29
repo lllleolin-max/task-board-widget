@@ -15,9 +15,12 @@ function isDesktopWindow(hwnd) {
 
 function isDesktopAbove(nativeHandle) {
   let hwnd = nativeHandle.length === 8 ? nativeHandle.readBigUInt64LE() : nativeHandle.readUInt32LE();
-  // GW_HWNDPREV walks toward the top of the Z-order. Bound the walk
-  // because Explorer or another application may change the order meanwhile.
-  for (let count = 0; count < 256; count++) {
+  // GW_HWNDPREV walks toward the top of the Z-order. A desktop session can
+  // contain hundreds of hidden helper windows; detect cycles instead of
+  // cutting off a valid chain after an arbitrary number of handles.
+  const visited = new Set();
+  while (!visited.has(String(hwnd))) {
+    visited.add(String(hwnd));
     hwnd = previousWindow(hwnd, 3);
     if (!hwnd) return false;
     if (isVisible(hwnd) && isDesktopWindow(hwnd)) return true;

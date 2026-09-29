@@ -258,6 +258,44 @@ test('Windows restores repeated desktop reveals only when the desktop actually c
   assert.equal(widget.topMoves, 2, 'a foreground ordinary app must remain above an unpinned panel');
 });
 
+test('Windows restores hidden panels while the desktop stays foreground without a minimize event', async () => {
+  const env = await desktop({ platform: 'win32' }); env.load();
+  env.send('report-widget-bounds', rect()); env.send('report-schedule-bounds', rect(200, 10));
+  env.foreground(true);
+  const shown = env.windows.map(win => win.raised);
+  for (const win of env.windows) {
+    win.visible = false;
+    win.emit('hide');
+  }
+  env.foreground(true);
+  for (const [index, win] of env.windows.entries()) {
+    assert.equal(win.visible, true, `${win.panel} must return after a native hide on the desktop`);
+    assert.equal(win.raised, shown[index] + 1, `${win.panel} must be shown again, not only moved in the Z-order`);
+    assert.ok(!win.focused, 'restoring a hidden panel must not take keyboard focus');
+  }
+  env.foreground(true);
+  assert.deepEqual(env.windows.map(win => win.raised), shown.map(count => count + 1),
+    'already visible panels must not be re-shown every tick');
+});
+
+test('Windows persistent-desktop recovery does not revive disabled, crashed or tray-hidden panels', async () => {
+  for (const reason of ['disabled', 'crashed', 'tray-hidden']) {
+    const env = await desktop({ platform: 'win32' }); env.load();
+    const [widget, schedule] = env.windows;
+    env.send('report-widget-bounds', rect()); env.send('report-schedule-bounds', rect(200, 10));
+    env.foreground(true);
+    if (reason === 'disabled') env.send('report-schedule-bounds', rect(0, 0, 0, 0, { visible: false }));
+    else if (reason === 'crashed') schedule.webContents.emit('render-process-gone');
+    else env.trays[0].emit('click');
+    const shown = schedule.raised;
+    env.cover('widget'); env.foreground(true);
+    assert.equal(schedule.visible, false, `${reason} schedule must stay hidden`);
+    assert.equal(schedule.raised, shown, `${reason} schedule must not be re-shown`);
+    assert.equal(schedule.webContents.reloads || 0, 0, 'desktop recovery must not reload a crashed renderer');
+    assert.equal(widget.visible, reason !== 'tray-hidden', 'an explicit tray hide applies to both panels');
+  }
+});
+
 for (const pins of [
   { widget: false, schedule: false },
   { widget: true, schedule: false },
@@ -292,7 +330,7 @@ for (const pins of [
   });
 }
 
-test('Windows desktop Z-order checks visible shell windows and bounds traversal during changes', () => {
+function nativeDesktop() {
   const module = { exports: {} };
   let front = 3, visits = 0;
   const above = new Map([[1, 2], [2, 3], [3, 0]]);
@@ -300,7 +338,11 @@ test('Windows desktop Z-order checks visible shell windows and bounds traversal 
   const visible = new Set([3]);
   const native = {
     GetForegroundWindow: () => front,
-    GetWindow: (hwnd, command) => { assert.equal(command, 3); visits++; return above.get(Number(hwnd)) || 0; },
+    GetWindow: (hwnd, command) => {
+      assert.equal(command, 3);
+      assert.ok(++visits <= 4096, 'cyclic native window order must not hang the app');
+      return above.get(Number(hwnd)) || 0;
+    },
     IsWindowVisible: (hwnd) => Number(visible.has(Number(hwnd))),
     GetClassNameW: (hwnd, buffer) => {
       const name = classes.get(Number(hwnd)) || '';
@@ -314,16 +356,34 @@ test('Windows desktop Z-order checks visible shell windows and bounds traversal 
   });
   const api = module.exports, handle = Buffer.alloc(8);
   handle.writeBigUInt64LE(1n);
+  return { api, handle, above, classes, visible,
+    foreground: value => { front = value; },
+    resetVisits: () => { visits = 0; }, visits: () => visits,
+  };
+}
+
+test('Windows desktop Z-order checks visible shell windows and bounds traversal during changes', () => {
+  const env = nativeDesktop();
+  const { api, handle, above, classes, visible } = env;
   assert.equal(api.isDesktopForeground(), false);
   assert.equal(api.isDesktopAbove(handle), false, 'invisible desktop workers do not count as occlusion');
-  visible.add(2); front = 2;
+  visible.add(2); env.foreground(2);
   assert.equal(api.isDesktopForeground(), true);
   assert.equal(api.isDesktopAbove(handle), true);
   visible.delete(2); classes.set(3, 'Progman');
   assert.equal(api.isDesktopAbove(handle), true, 'visible Progman is detected farther up the Z-order');
-  classes.set(3, 'OrdinaryApp'); above.set(3, 2); visits = 0;
+  classes.set(3, 'OrdinaryApp'); above.set(3, 2); env.resetVisits();
   assert.equal(api.isDesktopAbove(handle), false);
-  assert.equal(visits, 256, 'changing or cyclic native window order cannot hang the app');
+  assert.ok(env.visits() <= 4096, 'changing or cyclic native window order cannot hang the app');
+});
+
+test('Windows desktop Z-order detects the desktop beyond 600 intervening windows', () => {
+  const { api, handle, above, classes, visible } = nativeDesktop();
+  above.clear(); classes.clear(); visible.clear();
+  for (let hwnd = 1; hwnd < 702; hwnd++) above.set(hwnd, hwnd + 1);
+  classes.set(702, 'WorkerW');
+  visible.add(702);
+  assert.equal(api.isDesktopAbove(handle), true, 'a desktop 701 steps above the panel must be detected');
 });
 
 test('DOM pointer capture keeps a drag in its panel until released, and resets on hide or reload', async () => {
