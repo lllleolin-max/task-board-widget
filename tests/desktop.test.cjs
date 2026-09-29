@@ -9,7 +9,7 @@ const root = path.join(__dirname, '..');
 const rect = (left = 10, top = 10, width = 100, height = 100, other = {}) => ({ left, top, width, height, ...other });
 const plain = (value) => JSON.parse(JSON.stringify(value));
 
-async function desktop({ lock = true, platform = 'darwin', packaged = true, floatingPinFails = false } = {}) {
+async function desktop({ lock = true, platform = 'darwin', packaged = true, floatingPinFails = false, moveTopFails = false } = {}) {
   const windows = [], trays = [], intervals = new Map(), handlers = new Map(), opened = [], covered = new Set();
   let nextTimer = 0, cursor = { x: 30, y: 30 }, cursorReads = 0, desktopForeground = false, topSequence = 0;
   const display = { bounds: { x: 0, y: 0, width: 1920, height: 1080 } };
@@ -23,7 +23,7 @@ async function desktop({ lock = true, platform = 'darwin', packaged = true, floa
   class Window extends EventEmitter {
     constructor(options) {
       super(); this.options = options; this.bounds = { x: options.x, y: options.y, width: options.width, height: options.height };
-      this.visible = false; this.destroyed = false; this.webContents = new Contents(); this.mouseChanges = 0; windows.push(this);
+      this.visible = false; this.destroyed = false; this.webContents = new Contents(); this.mouseChanges = 0; this.pinCalls = []; windows.push(this);
     }
     loadFile(file, { query }) { this.file = file; this.panel = query.panel; this.webContents.emit('did-start-loading'); return Promise.resolve(); }
     isDestroyed() { return this.destroyed; }
@@ -31,13 +31,17 @@ async function desktop({ lock = true, platform = 'darwin', packaged = true, floa
     showInactive() { this.raised = (this.raised || 0) + 1; this.topOrder = ++topSequence; if (!this.visible) { this.visible = true; this.emit('show'); } }
     hide() { if (this.visible) { this.visible = false; this.emit('hide'); } }
     focus() { this.focused = true; }
-    moveTop() { this.topMoves = (this.topMoves || 0) + 1; this.topOrder = ++topSequence; covered.delete(this); }
+    moveTop() { this.topMoves = (this.topMoves || 0) + 1; this.topOrder = ++topSequence; if (!moveTopFails) covered.delete(this); }
     getNativeWindowHandle() { return this; }
     getBounds() { return this.bounds; }
     setBounds(value) { this.bounds = { ...value }; }
     setIgnoreMouseEvents(ignore) { this.ignoreMouse = ignore; this.mouseChanges++; }
     setShape(rects) { this.shape = plain(rects); this.shapeChanges = (this.shapeChanges || 0) + 1; }
-    setAlwaysOnTop(value, level) { this.pinned = value && !(floatingPinFails && level === 'floating'); this.level = level; }
+    setAlwaysOnTop(value, level) {
+      this.pinCalls.push({ value, level });
+      this.pinned = value && !(floatingPinFails && level === 'floating'); this.level = level;
+      if (this.pinned) covered.delete(this);
+    }
     isAlwaysOnTop() { return !!this.pinned; }
     close() {
       let prevented = false;
@@ -93,6 +97,7 @@ async function desktop({ lock = true, platform = 'darwin', packaged = true, floa
     readCount: () => cursorReads,
     foreground: (value) => { desktopForeground = value; for (const timer of intervals.values()) timer.callback(); },
     cover: (panel) => covered.add(windows.find((win) => win.panel === panel)),
+    isCovered: (win) => covered.has(win),
     cursor: (x, y) => { cursor = { x, y }; for (const timer of intervals.values()) timer.callback(); },
     load: () => windows.forEach((win) => win.webContents.emit('did-finish-load')),
     invoke: (channel, ...args) => handlers.get(`desktop:${channel}`)(event(), ...args),
@@ -256,6 +261,74 @@ test('Windows restores repeated desktop reveals only when the desktop actually c
   env.cover('widget');
   env.foreground(false);
   assert.equal(widget.topMoves, 2, 'a foreground ordinary app must remain above an unpinned panel');
+});
+
+test('Windows desktop recovery uses a temporary topmost pulse when ordinary raising fails', async () => {
+  const env = await desktop({ platform: 'win32', moveTopFails: true }); env.load();
+  env.send('report-widget-bounds', rect()); env.send('report-schedule-bounds', rect(200, 10));
+  env.cover('widget'); env.cover('schedule');
+  env.foreground(true);
+  for (const win of env.windows) {
+    assert.equal(env.isCovered(win), false, `${win.panel} must recover even when moveTop has no effect`);
+    assert.deepEqual(win.pinCalls.map(call => call.value), [true, false], 'temporary topmost state is removed synchronously');
+    assert.equal(win.pinCalls[0].level, 'pop-up-menu', 'recovery must avoid the Windows floating-level fallback');
+    assert.equal(win.isAlwaysOnTop(), false);
+    assert.equal(win.visible, true);
+    assert.ok(!win.focused, 'desktop recovery must not activate either panel');
+  }
+  assert.deepEqual(plain(env.invoke('get-pins')), { widget: false, schedule: false });
+  env.foreground(true);
+  assert.ok(env.windows.every(win => win.pinCalls.length === 2), 'recovered panels need no further pulses');
+});
+
+test('Windows desktop fallback preserves a real pin and a temporary modal boost', async () => {
+  const env = await desktop({ platform: 'win32', moveTopFails: true }); env.load();
+  const [widget, schedule] = env.windows;
+  env.send('report-widget-bounds', rect()); env.send('report-schedule-bounds', rect(200, 10));
+  env.invoke('set-pin', 'schedule', true);
+  env.send('report-widget-bounds', rect(10, 10, 100, 100, { modal: true }));
+  const pinCalls = env.windows.map(win => win.pinCalls.slice());
+  env.cover('widget'); env.cover('schedule');
+  env.foreground(true);
+  assert.deepEqual(env.windows.map(win => win.pinCalls), pinCalls, 'an already-topmost window must never be pulsed back to normal');
+  assert.ok(env.windows.every(win => win.isAlwaysOnTop() && !win.focused));
+  assert.deepEqual(plain(env.invoke('get-pins')), { widget: false, schedule: true });
+  assert.ok(widget.topOrder > schedule.topOrder, 'the modal stays above its pinned sibling');
+  env.send('report-widget-bounds', rect());
+  assert.equal(widget.isAlwaysOnTop(), false, 'closing the modal still restores its original state');
+  assert.equal(schedule.isAlwaysOnTop(), true);
+});
+
+test('Windows desktop fallback does not raise or pulse over an ordinary foreground app', async () => {
+  const env = await desktop({ platform: 'win32', moveTopFails: true }); env.load();
+  env.send('report-widget-bounds', rect()); env.send('report-schedule-bounds', rect(200, 10));
+  env.foreground(true);
+  const stacking = env.windows.map(win => [win.topMoves, win.raised]);
+  env.cover('widget'); env.cover('schedule');
+  env.foreground(false); env.foreground(false);
+  assert.deepEqual(env.windows.map(win => [win.topMoves, win.raised]), stacking);
+  assert.ok(env.windows.every(win => env.isCovered(win) && win.pinCalls.length === 0 && !win.focused));
+});
+
+test('Windows desktop recovery does not pulse when ordinary raising succeeds', async () => {
+  const env = await desktop({ platform: 'win32' }); env.load();
+  env.send('report-widget-bounds', rect()); env.send('report-schedule-bounds', rect(200, 10));
+  env.cover('widget'); env.cover('schedule');
+  env.foreground(true);
+  assert.ok(env.windows.every(win => !env.isCovered(win) && win.pinCalls.length === 0 && !win.focused));
+  assert.deepEqual(plain(env.invoke('get-pins')), { widget: false, schedule: false });
+});
+
+test('Windows explicit show restores both panel layers after focusing the main window', async () => {
+  const env = await desktop({ platform: 'win32' }); env.load();
+  env.send('report-widget-bounds', rect()); env.send('report-schedule-bounds', rect(200, 10));
+  env.trays[0].emit('click');
+  env.cover('widget'); env.cover('schedule');
+  env.app.emit('second-instance');
+  assert.ok(env.windows.every(win => win.visible && !env.isCovered(win)), 'the unfocused schedule must also rise above the desktop');
+  assert.ok(env.windows[0].focused);
+  assert.ok(!env.windows[1].focused);
+  assert.ok(env.windows.every(win => win.pinCalls.length === 0), 'explicit show does not change pins');
 });
 
 test('Windows restores hidden panels while the desktop stays foreground without a minimize event', async () => {

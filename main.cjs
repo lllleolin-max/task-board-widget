@@ -59,6 +59,7 @@ function showWindow() {
   }
   syncWindowVisibility();
   if (isVisible(mainWindow)) mainWindow.focus();
+  if (nativeHitTesting) raiseVisiblePanels();
 }
 
 function toggleWindow() {
@@ -126,12 +127,28 @@ function restoreOnDesktop() {
     // Raise on desktop entry or actual occlusion, including repeated Win+D.
     // Normal apps stay above unpinned panels; no keyboard focus is taken.
     syncWindowVisibility();
-    for (const panel of panelStackingOrder()) {
-      const win = panelWindow(panel);
-      if (isVisible(win)) win.moveTop();
-    }
+    raiseVisiblePanels();
   }
   desktopWasForeground = onDesktop;
+}
+
+function raiseVisiblePanels() {
+  for (const panel of panelStackingOrder()) {
+    const win = panelWindow(panel);
+    if (!isVisible(win)) continue;
+    win.moveTop();
+    // Explorer can remain above HWND_TOP. A synchronous topmost round trip
+    // re-enters the normal window band without changing the user's Pin state.
+    // Preserve existing native topmost, including a modal's temporary Pin.
+    if (!win.isAlwaysOnTop() && windowsDesktop.isDesktopForeground() &&
+        windowsDesktop.isDesktopAbove(win.getNativeWindowHandle())) {
+      try {
+        win.setAlwaysOnTop(true, 'pop-up-menu');
+      } finally {
+        win.setAlwaysOnTop(false);
+      }
+    }
+  }
 }
 
 function createTray() {
