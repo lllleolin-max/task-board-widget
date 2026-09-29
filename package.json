@@ -1,6 +1,6 @@
 {
   "name": "task-board-widget",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "A lightweight bilingual-ready task and schedule widget",
   "main": "main.cjs",
   "author": "lllleolin-max",
@@ -8,9 +8,15 @@
   "scripts": {
     "start": "electron .",
     "dist:win": "electron-builder --win nsis --x64 --publish never",
-    "dist:mac": "electron-builder --mac dmg --universal --publish never"
+    "dist:mac": "electron-builder --mac dmg --universal --publish never",
+    "test": "node --test tests/*.test.cjs",
+    "test:browser": "playwright test",
+    "check": "node scripts/check.cjs",
+    "verify": "npm run check && npm test && npm run test:browser",
+    "test:electron": "node tests/electron-smoke.cjs"
   },
   "devDependencies": {
+    "@playwright/test": "1.63.0",
     "electron": "^44.4.5",
     "electron-builder": "^26.15.3"
   },
@@ -22,7 +28,10 @@
       "index.html",
       "main.cjs",
       "preload.cjs",
-      "themes/**/*",
+      "themes/*-bg.png",
+      "themes/anu-crest.svg",
+      "themes/ANU-crest-attribution.txt",
+      "build/icon.png",
       "LICENSE",
       "README.md"
     ],

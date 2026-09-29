@@ -2,3 +2,7 @@
 Thumbs.db
 node_modules/
 dist/
+test-results*/
+playwright-report/
+build/icon.iconset/
+build/icon.icns
