@@ -258,6 +258,40 @@ test('Windows restores repeated desktop reveals only when the desktop actually c
   assert.equal(widget.topMoves, 2, 'a foreground ordinary app must remain above an unpinned panel');
 });
 
+for (const pins of [
+  { widget: false, schedule: false },
+  { widget: true, schedule: false },
+  { widget: false, schedule: true },
+  { widget: true, schedule: true },
+]) {
+  test(`Windows desktop persistence preserves independent pins ${JSON.stringify(pins)}`, async () => {
+    const env = await desktop({ platform: 'win32' }); env.load();
+    env.send('report-widget-bounds', rect()); env.send('report-schedule-bounds', rect(200, 10));
+    for (const [panel, pinned] of Object.entries(pins)) env.invoke('set-pin', panel, pinned);
+    const verify = () => {
+      assert.deepEqual(plain(env.invoke('get-pins')), pins);
+      for (const win of env.windows) {
+        assert.equal(win.isVisible(), true, `${win.panel} remains available on the desktop`);
+        assert.equal(win.isAlwaysOnTop(), pins[win.panel], `${win.panel} keeps its native topmost choice`);
+        assert.ok(!win.focused, 'desktop recovery must not take keyboard focus');
+      }
+    };
+    env.foreground(true);
+    verify();
+    env.cover('widget'); env.cover('schedule'); env.foreground(true);
+    assert.ok(env.windows.every((win) => win.topMoves === 2), 'repeated desktop reveal restores both panels');
+    verify();
+    for (const win of env.windows) { win.visible = false; win.emit('minimize'); }
+    verify();
+    const stacking = env.windows.map((win) => [win.topMoves, win.raised]);
+    env.foreground(false);
+    env.cover('widget'); env.cover('schedule'); env.foreground(false);
+    assert.deepEqual(env.windows.map((win) => [win.topMoves, win.raised]), stacking,
+      'an ordinary foreground app does not trigger panel raising or re-showing');
+    verify();
+  });
+}
+
 test('Windows desktop Z-order checks visible shell windows and bounds traversal during changes', () => {
   const module = { exports: {} };
   let front = 3, visits = 0;
