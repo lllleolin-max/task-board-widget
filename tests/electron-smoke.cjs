@@ -7,11 +7,12 @@ const { _electron, expect } = require('@playwright/test');
 
 async function main() {
   const root = path.resolve(__dirname, '..');
+  const appRoot = process.env.TASKBOARD_SMOKE_APP ? path.resolve(process.env.TASKBOARD_SMOKE_APP) : root;
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'taskboard-smoke-'));
   const profile = path.join(temporary, 'profile');
   const entry = path.join(temporary, 'entry.cjs');
   await fs.mkdir(profile);
-  await fs.writeFile(entry, `const { app } = require('electron');\napp.setPath('userData', ${JSON.stringify(profile)});\nrequire(${JSON.stringify(path.join(root, 'main.cjs'))});\n`);
+  await fs.writeFile(entry, `const { app } = require('electron');\napp.setPath('userData', ${JSON.stringify(profile)});\nrequire(${JSON.stringify(path.join(appRoot, 'main.cjs'))});\n`);
   let app;
   const errors = [];
   try {
@@ -48,6 +49,11 @@ async function main() {
     await expect.poll(nativeWindows).toEqual([
       { panel: 'schedule', visible: true, pinned: false }, { panel: 'widget', visible: true, pinned: false },
     ]);
+    await expect.poll(async () => {
+      const mainBounds = await widget.locator('#widget').boundingBox();
+      const scheduleBounds = await schedule.locator('#schedule-card').boundingBox();
+      return Math.abs(mainBounds.width - scheduleBounds.width);
+    }).toBeLessThan(2);
     await expect.poll(() => schedule.evaluate(() => ({
       language: document.documentElement.lang,
       theme: document.getElementById('app-stack').dataset.theme,
@@ -77,6 +83,18 @@ async function main() {
     await expect.poll(() => nativeWindows().then((windows) => windows.every((win) => win.visible && win.pinned))).toBe(true);
     await widget.evaluate(() => window.desktopBridge.setPin('widget', false));
     await schedule.evaluate(() => window.desktopBridge.setPin('schedule', false));
+    if (process.platform === 'win32') {
+      await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((win) => win.webContents.getURL().includes('panel=schedule')).focus());
+      await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((win) => win.webContents.getURL().includes('panel=schedule')).isFocused())).toBe(true);
+      await app.evaluate(({ BrowserWindow }) => {
+        const win = BrowserWindow.getAllWindows().find((item) => item.webContents.getURL().includes('panel=widget'));
+        win.minimize();
+      });
+      await expect.poll(() => app.evaluate(({ BrowserWindow }) => {
+        const win = BrowserWindow.getAllWindows().find((item) => item.webContents.getURL().includes('panel=widget'));
+        return { visible: win.isVisible(), minimized: win.isMinimized(), focused: win.isFocused(), pinned: win.isAlwaysOnTop() };
+      })).toEqual({ visible: true, minimized: false, focused: false, pinned: false });
+    }
     const bounds = await widget.evaluate(() => window.desktopBridge.getWidgetBounds());
     assert.ok(bounds.width > 0 && bounds.height > 0, 'renderer bounds reach the native process');
 
@@ -95,8 +113,8 @@ async function main() {
       { panel: 'schedule', visible: false, pinned: false }, { panel: 'widget', visible: true, pinned: false },
     ]);
     assert.deepEqual(errors, [], 'no uncaught errors in Electron renderers');
-    console.log('Electron smoke passed: isolated profile, preload/IPC, tasks/courses, settings sync, independent pins, native visibility, hidden reload and restore.');
-    console.log('OS login changes, reboot, physical tray clicks and macOS behavior require manual validation.');
+    console.log('Electron smoke passed: isolated profile, preload/IPC, tasks/courses, settings sync, docking, independent pins, native visibility, minimize recovery, hidden reload and restore.');
+    console.log('Physical first clicks, Win+D, login changes, reboot, tray clicks and macOS behavior require manual validation.');
   } finally {
     if (app) await app.close();
     // Only remove the disposable directory created by this invocation.

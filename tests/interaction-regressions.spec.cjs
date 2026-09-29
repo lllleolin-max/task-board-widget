@@ -138,3 +138,76 @@ test('a floating schedule collapses to its header and expands to its previous si
   await expect.poll(async () => Math.abs((await page.locator('#schedule-card').boundingBox()).height - expanded.height)).toBeLessThan(2);
   expect((await page.locator('#schedule-card').boundingBox()).width).toBeCloseTo(expanded.width, 0);
 });
+
+for (const panel of ['widget', 'schedule']) {
+  test(`desktop ${panel} toast stays near its panel, is included in the shape, and releases its area`, async ({ page }) => {
+    await page.addInitScript(() => {
+      window.boundsReports = {};
+      window.desktopBridge = {
+        reportWidgetBounds: bounds => { window.boundsReports.widget = bounds; },
+        reportScheduleBounds: bounds => { window.boundsReports.schedule = bounds; },
+        getPins: async () => ({ widget: false, schedule: false }),
+        setLocale: () => {},
+        onWidgetBounds: () => {},
+        getWidgetBounds: async () => ({ left: 160, top: 80, width: 352, height: 240 }),
+        onCourseEnabled: () => {},
+      };
+    });
+    await page.evaluate(() => localStorage.setItem(
+      'minimal-task-widget-settings-v1',
+      JSON.stringify({ courseEnabled: true }),
+    ));
+    await page.goto(`${url}?panel=${panel}`);
+    expect(pageErrors).toEqual([]);
+
+    if (panel === 'schedule') {
+      // The host sends one authoritative widget rectangle. Docking must settle
+      // correctly without a second update to repair an animated mirror width.
+      await expect.poll(async () => {
+        const rect = await page.locator('#schedule-card').boundingBox();
+        return { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width) };
+      }).toEqual({ x: 160, y: 332, width: 352 });
+    }
+
+    if (panel === 'widget') {
+      await page.locator('#clock').click();
+      await page.locator('#manual-datetime').fill('2026-10-05T12:00');
+      await page.locator('#clock-save').click();
+      await expect(page.locator('#toast')).toHaveText('日期和时间已保存');
+    } else {
+      await page.locator('#schedule-edit').click();
+      await page.locator('#course-name').fill('桌面提示回归课程');
+      await page.locator('#schedule-save').click();
+      await expect(page.locator('#toast')).toHaveText('课程已添加');
+    }
+
+    const toast = page.locator('#toast');
+    await expect(toast).toHaveCSS('opacity', '1');
+    const toastBox = await toast.boundingBox();
+    const panelBox = await page.locator(panel === 'widget' ? '#widget' : '#schedule-card').boundingBox();
+    expect(Math.abs(toastBox.x + toastBox.width / 2 - panelBox.x - panelBox.width / 2)).toBeLessThan(2);
+    const gap = Math.min(
+      Math.abs(toastBox.y - panelBox.y - panelBox.height),
+      Math.abs(panelBox.y - toastBox.y - toastBox.height),
+    );
+    expect(gap).toBeLessThan(20);
+    const viewport = page.viewportSize();
+    expect(toastBox.x).toBeGreaterThanOrEqual(0);
+    expect(toastBox.y).toBeGreaterThanOrEqual(0);
+    expect(toastBox.x + toastBox.width).toBeLessThanOrEqual(viewport.width);
+    expect(toastBox.y + toastBox.height).toBeLessThanOrEqual(viewport.height);
+
+    // Assert the visible notification fits an actual region sent to the native
+    // window. Opacity alone cannot prove visibility after Windows clips the HWND.
+    await expect.poll(() => page.evaluate(({ panel, box }) => {
+      const report = window.boundsReports[panel];
+      return !!report && [report, ...(report.extraRects || [])].some(region =>
+        region.left <= box.x + 1 && region.top <= box.y + 1 &&
+        region.left + region.width >= box.x + box.width - 1 &&
+        region.top + region.height >= box.y + box.height - 1,
+      );
+    }, { panel, box: toastBox })).toBe(true);
+    await expect(toast).not.toHaveClass(/show/);
+    await expect.poll(() => page.evaluate(panel => window.boundsReports[panel]?.extraRects, panel)).toEqual([]);
+  });
+}

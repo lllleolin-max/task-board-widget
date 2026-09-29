@@ -9,7 +9,7 @@ const manifest = JSON.parse(read('package.json'));
 const lock = JSON.parse(read('package-lock.json'));
 assert.equal(manifest.version, lock.version, 'package-lock version must match package.json');
 assert.equal(manifest.version, lock.packages[''].version);
-for (const file of ['main.cjs', 'preload.cjs']) new vm.Script(read(file), { filename: file });
+for (const file of ['main.cjs', 'preload.cjs', 'windows-desktop.cjs']) new vm.Script(read(file), { filename: file });
 const html = read('index.html');
 for (const [index, [, script]] of [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].entries()) {
   new vm.Script(script, { filename: `index.html:script-${index + 1}` });

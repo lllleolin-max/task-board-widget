@@ -28,12 +28,16 @@
       "index.html",
       "main.cjs",
       "preload.cjs",
+      "windows-desktop.cjs",
       "themes/*-bg.png",
       "themes/anu-crest.svg",
       "themes/ANU-crest-attribution.txt",
       "build/icon.png",
       "LICENSE",
-      "README.md"
+      "README.md",
+      "!node_modules/koffi/{doc,lib,vendor}/**/*",
+      "!node_modules/koffi/src/**/*.{cc,hh,inc,def}",
+      "!node_modules/koffi/cnoke.cjs"
     ],
     "directories": {
       "buildResources": "build",
@@ -58,6 +62,11 @@
     },
     "mac": {
       "icon": "build/icon.icns",
+      "files": [
+        "!windows-desktop.cjs",
+        "!node_modules/koffi{,/**/*}",
+        "!node_modules/@koromix{,/**/*}"
+      ],
       "category": "public.app-category.productivity",
       "target": [
         {
@@ -74,5 +83,8 @@
     "dmg": {
       "sign": false
     }
+  },
+  "dependencies": {
+    "koffi": "3.3.2"
   }
 }

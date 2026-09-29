@@ -1,6 +1,6 @@
 # 功能验证矩阵
 
-浏览器测试使用 Playwright Chromium，每条用例创建独立浏览器上下文，直接打开仓库的 `index.html`。测试数据只存在于临时上下文，不读取或修改用户浏览器和桌面版的数据目录。固定时钟为 2026-09-29 12:00（Asia/Shanghai），避免跨日、时区和月份产生随机失败。
+浏览器测试使用 Playwright Chromium，每条用例创建独立浏览器上下文，直接打开仓库的 `index.html`。测试数据只存在于临时上下文，不读取或修改用户浏览器和桌面版的数据目录。日期测试固定时钟为 2026-09-29 12:00（Asia/Shanghai），避免跨日、时区和月份产生随机失败。
 
 ```sh
 npm ci
@@ -35,9 +35,13 @@ Linux CI 安装浏览器及系统依赖：`npx playwright install --with-deps ch
 
 所有浏览器回归同时检查未捕获的页面 JavaScript 错误。桌面 IPC、窗口策略和版本管理的自动化覆盖以同目录的 `*.test.cjs` 为准。
 
+桌面逻辑回归覆盖 Windows 原生点击区域、模态弹窗与拖动捕获、渲染崩溃后的输入释放与显式恢复、显示桌面后的层级恢复、最小化恢复、主动隐藏与独立置顶，以及 macOS 的轮询降级。模拟的桌面状态切换验证逻辑，不等同于物理 Win+D 验收。
+
 ## Electron 实机回归
 
 在有桌面会话的 Windows 环境运行 `npm run test:electron`。脚本创建临时独立数据目录，验证真实 preload/IPC、任务与课表同步、主题语言字号同步、原生窗口独立置顶、隐藏后重载与恢复，以及课程校验提示可见性。退出后清理临时数据；不会写系统自启动设置。此回归已在 Windows / Electron 44.4.5 运行通过。
+
+构建 Windows 安装包后，可将 `TASKBOARD_SMOKE_APP` 环境变量设为 `dist/win-unpacked/resources/app.asar` 再运行同一脚本，验证打包后的应用代码与原生模块加载；测试仍使用开发版 Electron 和临时数据目录，不执行安装或卸载。
 
 ## 自动化边界
 
@@ -45,3 +49,4 @@ Linux CI 安装浏览器及系统依赖：`npx playwright install --with-deps ch
 - 浏览器真实 Document Picture-in-Picture 权限、系统剪贴板图片、物理托盘点击、实际登录自启动、安装 / 卸载和系统缩放仍需人工验证。macOS 原生行为未在这台 Windows 机器上验收；桌面面板当前限制在主显示器范围内。
 - 六种主题切换和资源路径有行为检查；不替代逐像素视觉评审。仅测试 Chromium，未宣称 Firefox / Safari 兼容性。
 - UI 测试验证主要交互和已发现问题的回归，不穷举所有数据组合与操作顺序。
+- Windows 已检查真实 Electron 最小化后恢复时不抢焦点、不改变置顶状态；Computer Use 的坐标点击检查了两个面板之间的按钮操作，但工具会预激活目标窗口。Windows 键快捷键不在该工具的允许操作范围内，因此物理首次点击和 Win+D 仍需用户实机复核。

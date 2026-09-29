@@ -7,8 +7,24 @@ function subscribe(channel, callback) {
 }
 
 // Keep a drag in its original transparent window until DOM capture is released.
-document.addEventListener('gotpointercapture', () => ipcRenderer.send('desktop:pointer-capture', true));
-document.addEventListener('lostpointercapture', () => ipcRenderer.send('desktop:pointer-capture', false));
+const capturedPointers = new Set();
+document.addEventListener('gotpointercapture', (event) => {
+  const wasCaptured = capturedPointers.size > 0;
+  capturedPointers.add(event.pointerId);
+  if (!wasCaptured) ipcRenderer.send('desktop:pointer-capture', true);
+});
+document.addEventListener('lostpointercapture', (event) => {
+  if (capturedPointers.delete(event.pointerId) && capturedPointers.size === 0) {
+    ipcRenderer.send('desktop:pointer-capture', false);
+  }
+});
+function releasePointerCapture() {
+  if (capturedPointers.size === 0) return;
+  capturedPointers.clear();
+  ipcRenderer.send('desktop:pointer-capture', false);
+}
+window.addEventListener('blur', releasePointerCapture);
+window.addEventListener('pagehide', releasePointerCapture);
 
 contextBridge.exposeInMainWorld('desktopBridge', {
   setPin: (panel, enabled) => ipcRenderer.invoke('desktop:set-pin', panel, !!enabled),

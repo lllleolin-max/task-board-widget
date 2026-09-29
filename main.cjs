@@ -15,7 +15,15 @@ let isQuitting = false;
 let locale = 'zh-CN';
 let windowsShown = true;
 const readyPanels = new Set();
+const failedPanels = new Set();
 const panels = ['widget', 'schedule'];
+const nativeHitTesting = process.platform === 'win32';
+const inputRegions = new WeakMap();
+const windowsDesktop = nativeHitTesting ? require('./windows-desktop.cjs') : null;
+let desktopTimer = null;
+let desktopWasForeground = false;
+let modalPanel = null;
+let modalTemporarilyPinned = false;
 
 const trayText = {
   'zh-CN': { show: '显示主线 · 支线', hide: '隐藏窗口', quit: '退出' },
@@ -42,6 +50,13 @@ function updateTrayMenu() {
 
 function showWindow() {
   windowsShown = true;
+  for (const panel of failedPanels) {
+    const win = panelWindow(panel);
+    if (win && !win.isDestroyed()) {
+      failedPanels.delete(panel);
+      win.webContents.reload();
+    }
+  }
   syncWindowVisibility();
   if (isVisible(mainWindow)) mainWindow.focus();
 }
@@ -60,8 +75,12 @@ function isVisible(win) {
   return !!win && !win.isDestroyed() && win.isVisible();
 }
 
+function panelStackingOrder() {
+  return lastWidgetBounds?.modal ? ['schedule', 'widget'] : panels;
+}
+
 function syncWindowVisibility() {
-  for (const panel of panels) {
+  for (const panel of panelStackingOrder()) {
     const win = panelWindow(panel);
     if (!win || win.isDestroyed() || !readyPanels.has(panel)) continue;
     const visible = windowsShown && (panel === 'widget' || lastScheduleBounds?.visible);
@@ -74,13 +93,40 @@ function syncWindowVisibility() {
 function updateWindowState() {
   if (!isVisible(panelWindow(capturedPanel))) capturedPanel = null;
   const visible = !isQuitting && (isVisible(mainWindow) || isVisible(scheduleWindow));
-  if (visible && interactionTimer === null) interactionTimer = setInterval(routePointerToPanel, 16);
+  if (visible && !nativeHitTesting && interactionTimer === null) interactionTimer = setInterval(routePointerToPanel, 16);
   else if (!visible && interactionTimer !== null) {
     clearInterval(interactionTimer);
     interactionTimer = null;
   }
+  const watchDesktop = nativeHitTesting && !isQuitting && windowsShown &&
+    (readyPanels.has('widget') || (readyPanels.has('schedule') && lastScheduleBounds?.visible));
+  if (watchDesktop && desktopTimer === null) desktopTimer = setInterval(restoreOnDesktop, 250);
+  else if (!watchDesktop && desktopTimer !== null) {
+    clearInterval(desktopTimer);
+    desktopTimer = null;
+    desktopWasForeground = false;
+  }
   updateTrayMenu();
   routePointerToPanel();
+}
+
+function restoreOnDesktop() {
+  const onDesktop = windowsDesktop.isDesktopForeground();
+  const covered = onDesktop && panels.some((panel) => {
+    const win = panelWindow(panel);
+    return isVisible(win) && windowsDesktop.isDesktopAbove(win.getNativeWindowHandle());
+  });
+  if (onDesktop && (!desktopWasForeground || covered)) {
+    // Win+D can put Explorer above a non-minimizable window without hiding it.
+    // Raise on desktop entry or actual occlusion, including repeated Win+D.
+    // Normal apps stay above unpinned panels; no keyboard focus is taken.
+    syncWindowVisibility();
+    for (const panel of panelStackingOrder()) {
+      const win = panelWindow(panel);
+      if (isVisible(win)) win.moveTop();
+    }
+  }
+  desktopWasForeground = onDesktop;
 }
 
 function createTray() {
@@ -128,6 +174,10 @@ function setInteractivePanel(panel) {
 }
 
 function routePointerToPanel() {
+  if (nativeHitTesting) {
+    updateInputRegions();
+    return;
+  }
   if (isQuitting || (!isVisible(mainWindow) && !isVisible(scheduleWindow))) {
     setInteractivePanel(null);
     return;
@@ -149,6 +199,46 @@ function routePointerToPanel() {
     return containsPoint(bounds[name], { x: cursor.x - origin.x, y: cursor.y - origin.y });
   });
   setInteractivePanel(panel || null);
+}
+
+function updateInputRegions() {
+  const bounds = { widget: lastWidgetBounds, schedule: lastScheduleBounds };
+  const modal = panels.find((name) => bounds[name]?.modal && isVisible(panelWindow(name))) || null;
+  if (modal !== modalPanel) {
+    const previous = panelWindow(modalPanel);
+    if (modalTemporarilyPinned && previous && !previous.isDestroyed()) previous.setAlwaysOnTop(pinned[modalPanel], 'pop-up-menu');
+    modalPanel = modal;
+    modalTemporarilyPinned = false;
+    if (modal) {
+      const win = panelWindow(modal);
+      if (!pinned[modal] && panels.some((name) => name !== modal && pinned[name])) {
+        win.setAlwaysOnTop(true, 'pop-up-menu');
+        modalTemporarilyPinned = true;
+      }
+      win.moveTop();
+    }
+  }
+  const owner = capturedPanel || modal;
+  for (const panel of panels) {
+    const win = panelWindow(panel);
+    if (!win || win.isDestroyed()) continue;
+    const box = bounds[panel];
+    const enabled = !isQuitting && isVisible(win) && !!box && box.visible !== false && (!owner || owner === panel);
+    // Windows routes the very first click using this native region, without
+    // waiting for a cursor poll. A small edge keeps resize handles reachable
+    // without letting a wide transparent shadow block the other panel.
+    const shape = box && !box.modal && capturedPanel !== panel ? [box, ...box.extraRects].map((rect) => ({
+      x: Math.floor(rect.left) - 4,
+      y: Math.floor(rect.top) - 4,
+      width: Math.ceil(rect.left + rect.width) - Math.floor(rect.left) + 8,
+      height: Math.ceil(rect.top + rect.height) - Math.floor(rect.top) + 8,
+    })) : [];
+    const key = JSON.stringify(shape);
+    const previous = inputRegions.get(win);
+    if (previous?.shape !== key) win.setShape(shape);
+    if (previous?.enabled !== enabled) win.setIgnoreMouseEvents(!enabled, { forward: true });
+    inputRegions.set(win, { shape: key, enabled });
+  }
 }
 
 function sanitizePanelBounds(bounds) {
@@ -208,8 +298,20 @@ function createWindow(panel) {
   });
   win.webContents.on('did-finish-load', () => {
     readyPanels.add(panel);
+    failedPanels.delete(panel);
     if (panel === 'schedule' && lastWidgetBounds) win.webContents.send('desktop:widget-bounds', lastWidgetBounds);
     syncWindowVisibility();
+  });
+  win.webContents.on('render-process-gone', () => {
+    if (isQuitting || win.isDestroyed()) return;
+    readyPanels.delete(panel);
+    failedPanels.add(panel);
+    if (capturedPanel === panel) capturedPanel = null;
+    if (panel === 'widget') lastWidgetBounds = null;
+    else lastScheduleBounds = null;
+    win.setIgnoreMouseEvents(true, { forward: true });
+    win.hide();
+    updateWindowState();
   });
   win.on('close', (event) => {
     if (!isQuitting) {
@@ -225,11 +327,13 @@ function createWindow(panel) {
     if (interactivePanel === panel) interactivePanel = null;
     if (capturedPanel === panel) capturedPanel = null;
     readyPanels.delete(panel);
+    failedPanels.delete(panel);
     pinned[panel] = false;
     updateWindowState();
   });
   win.on('show', updateWindowState);
   win.on('hide', updateWindowState);
+  if (nativeHitTesting) win.on('minimize', syncWindowVisibility);
   win.loadFile(path.join(__dirname, 'index.html'), { query: { panel } });
 }
 
@@ -326,6 +430,8 @@ else {
     isQuitting = true;
     if (interactionTimer !== null) clearInterval(interactionTimer);
     interactionTimer = null;
+    if (desktopTimer !== null) clearInterval(desktopTimer);
+    desktopTimer = null;
   });
   app.on('window-all-closed', () => {});
 }

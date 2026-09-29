@@ -59,6 +59,8 @@
       html[data-desktop-panel="schedule"] #widget {
         visibility: hidden !important;
         pointer-events: none !important;
+        /* This hidden mirror supplies exact docking bounds, not animation frames. */
+        transition: none !important;
       }
       html[data-desktop-panel="schedule"] .draft-window {
         display: none !important;
@@ -964,6 +966,13 @@
       .toast.show {
         opacity: 1;
         transform: translateX(-50%) translateY(0);
+      }
+      html[data-desktop-panel] .toast {
+        width: max-content;
+        max-width: min(320px, calc(100vw - 24px));
+        bottom: auto;
+        transform: translateX(-50%);
+        transition: opacity 0.18s;
       }
       @keyframes in {
         from {
@@ -2607,9 +2616,34 @@
       function toast(message) {
         const el = $("toast");
         el.textContent = tr(message);
+        if (window.desktopBridge) {
+          const rect = $(
+            desktopPanel === "schedule" ? "schedule-card" : "widget",
+          ).getBoundingClientRect();
+          const halfWidth = el.offsetWidth / 2;
+          el.style.left =
+            Math.max(
+              halfWidth + 8,
+              Math.min(innerWidth - halfWidth - 8, rect.left + rect.width / 2),
+            ) + "px";
+          const below = rect.bottom + 8;
+          const top =
+            below + el.offsetHeight <= innerHeight - 8
+              ? below
+              : rect.top - el.offsetHeight - 8;
+          el.style.top =
+            Math.max(8, Math.min(innerHeight - el.offsetHeight - 8, top)) +
+            "px";
+        }
         el.classList.add("show");
         clearTimeout(toastTimer);
         toastTimer = setTimeout(() => el.classList.remove("show"), 1800);
+      }
+      function toastRects() {
+        const el = $("toast");
+        if (!el.classList.contains("show")) return [];
+        const { left, top, width, height } = el.getBoundingClientRect();
+        return [{ left, top, width, height }];
       }
       function writeStorage(key, value) {
         try {
@@ -2652,16 +2686,19 @@
             height: r.height,
             visible: true,
             modal: !!document.querySelector(".scrim.open"),
-            extraRects: draftRect
-              ? [
-                  {
-                    left: draftRect.left,
-                    top: draftRect.top,
-                    width: draftRect.width,
-                    height: draftRect.height,
-                  },
-                ]
-              : [],
+            extraRects: [
+              ...(draftRect
+                ? [
+                    {
+                      left: draftRect.left,
+                      top: draftRect.top,
+                      width: draftRect.width,
+                      height: draftRect.height,
+                    },
+                  ]
+                : []),
+              ...toastRects(),
+            ],
           });
         }
       }
@@ -4933,22 +4970,26 @@
           height: r.height,
           visible: !scheduleCard.hidden && r.width > 0 && r.height > 0,
           modal: scheduleScrim.classList.contains("open"),
+          extraRects: toastRects(),
         });
       }
       if (window.desktopBridge && desktopPanel === "schedule") {
         new ResizeObserver(reportScheduleBounds).observe(scheduleCard);
         window.addEventListener("resize", reportScheduleBounds);
-        new MutationObserver(() =>
+        const scheduleStateObserver = new MutationObserver(() =>
           requestAnimationFrame(reportScheduleBounds),
-        ).observe(scheduleCard, {
+        );
+        scheduleStateObserver.observe(scheduleCard, {
           attributes: true,
           attributeFilter: ["class", "style", "hidden"],
         });
-        new MutationObserver(() =>
-          requestAnimationFrame(reportScheduleBounds),
-        ).observe(scheduleScrim, {
+        scheduleStateObserver.observe(scheduleScrim, {
           attributes: true,
           attributeFilter: ["class"],
+        });
+        scheduleStateObserver.observe($("toast"), {
+          attributes: true,
+          attributeFilter: ["class", "style"],
         });
       }
       appStack.dataset.theme = settings.theme || "default";
