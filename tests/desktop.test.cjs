@@ -488,6 +488,7 @@ test('tray localizes supported languages and rejects invalid/prototype/foreign v
 
 test('Windows development autostart includes the project path and reads back matching arguments', async () => {
   const env = await desktop({ platform: 'win32', packaged: false });
+  assert.equal(env.app.appId, require('../package.json').build.appId, 'Electron and the installer must share the startup value name');
   env.invoke('set-startup', true);
   assert.deepEqual(plain(env.app.loginOptions.args), ['"D:/My Apps/Taskboard"']);
   assert.deepEqual(plain(env.app.readLoginOptions), { path: env.app.loginOptions.path, args: ['"D:/My Apps/Taskboard"'] });

@@ -1,6 +1,6 @@
 {
   "name": "task-board-widget",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "A lightweight bilingual-ready task and schedule widget",
   "main": "main.cjs",
   "author": "lllleolin-max",
@@ -13,7 +13,8 @@
     "test:browser": "playwright test",
     "check": "node scripts/check.cjs",
     "verify": "npm run check && npm test && npm run test:browser",
-    "test:electron": "node tests/electron-smoke.cjs"
+    "test:electron": "node tests/electron-smoke.cjs",
+    "test:installer": "node tests/test-installer.cjs"
   },
   "devDependencies": {
     "@playwright/test": "1.63.0",
@@ -56,6 +57,9 @@
     },
     "nsis": {
       "oneClick": false,
+      "include": "build/installer.nsh",
+      "runAfterFinish": true,
+      "installerLanguages": ["en_US", "zh_CN", "zh_TW", "ja_JP", "ko_KR"],
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true
