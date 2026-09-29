@@ -12,7 +12,7 @@ async function main() {
   const profile = path.join(temporary, 'profile');
   const entry = path.join(temporary, 'entry.cjs');
   await fs.mkdir(profile);
-  await fs.writeFile(entry, `const { app } = require('electron');\napp.setPath('userData', ${JSON.stringify(profile)});\nrequire(${JSON.stringify(path.join(appRoot, 'main.cjs'))});\n`);
+  await fs.writeFile(entry, `const { app } = require('electron');\napp.setPath('userData', ${JSON.stringify(profile)});\nglobalThis.taskboardTestRequire = require('node:module').createRequire(${JSON.stringify(path.join(appRoot, 'package.json'))});\nrequire(${JSON.stringify(path.join(appRoot, 'main.cjs'))});\n`);
   let app;
   const errors = [];
   try {
@@ -70,6 +70,38 @@ async function main() {
     await schedule.locator('#schedule-save').click();
     await expect.poll(() => widget.evaluate(() => JSON.parse(localStorage.getItem('minimal-task-widget-schedule-v1') || '[]').map((course) => course.name))).toContain('Electron smoke course');
 
+    // Reproduce the reported order: move the schedule, release the drag, then
+    // activate and operate the main panel. Check native input state as well as DOM.
+    await app.evaluate(({ BrowserWindow, ipcMain }) => {
+      globalThis.taskboardDragCaptures = [];
+      ipcMain.on('desktop:pointer-capture', (_event, value) => globalThis.taskboardDragCaptures.push(value));
+      BrowserWindow.getAllWindows().find((win) => win.webContents.getURL().includes('panel=schedule')).focus();
+    });
+    await schedule.locator('#schedule-lock-toggle').click();
+    const beforeDrag = await schedule.locator('#schedule-card').boundingBox();
+    const header = await schedule.locator('.schedule-head').boundingBox();
+    await schedule.mouse.move(header.x + 70, header.y + header.height / 2);
+    await schedule.mouse.down();
+    await schedule.mouse.move(header.x - 150, header.y + header.height / 2 + 70, { steps: 15 });
+    await schedule.mouse.up();
+    await expect.poll(() => app.evaluate(() => globalThis.taskboardDragCaptures)).toEqual([true, false]);
+    const afterDrag = await schedule.locator('#schedule-card').boundingBox();
+    assert.ok(Math.abs(afterDrag.x - beforeDrag.x) > 100, 'the native schedule was actually dragged');
+    if (process.platform === 'win32') {
+      await expect.poll(() => app.evaluate(({ BrowserWindow }) => {
+        const getStyle = globalThis.taskboardTestRequire('koffi').load('user32.dll').func('intptr_t __stdcall GetWindowLongPtrW(uintptr_t hwnd, int index)');
+        return BrowserWindow.getAllWindows().map((win) => ({
+          visible: win.isVisible(),
+          ignoresMouse: !!(Number(getStyle(win.getNativeWindowHandle().readBigUInt64LE(), -20)) & 0x20),
+        }));
+      })).toEqual([{ visible: true, ignoresMouse: false }, { visible: true, ignoresMouse: false }]);
+    }
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((win) => win.webContents.getURL().includes('panel=widget')).focus());
+    await widget.locator('#settings-open').click();
+    await expect(widget.locator('#settings-scrim')).toHaveClass(/open/);
+    await expect.poll(() => nativeWindows().then((windows) => windows.every((win) => win.visible))).toBe(true);
+    await widget.locator('#settings-close').click();
+
     const pinResult = await widget.evaluate(() => window.desktopBridge.setPin('widget', true));
     assert.deepEqual(pinResult, { widget: true, schedule: false }, 'pin IPC accepts the owning main frame');
     await expect.poll(nativeWindows).toEqual([
@@ -113,7 +145,7 @@ async function main() {
       { panel: 'schedule', visible: false, pinned: false }, { panel: 'widget', visible: true, pinned: false },
     ]);
     assert.deepEqual(errors, [], 'no uncaught errors in Electron renderers');
-    console.log('Electron smoke passed: isolated profile, preload/IPC, tasks/courses, settings sync, docking, independent pins, native visibility, minimize recovery, hidden reload and restore.');
+    console.log('Electron smoke passed: isolated profile, preload/IPC, tasks/courses, settings sync, docking, schedule drag and native input release, independent pins, native visibility, minimize recovery, hidden reload and restore.');
     console.log('Physical first clicks, Win+D, login changes, reboot, tray clicks and macOS behavior require manual validation.');
   } finally {
     if (app) await app.close();

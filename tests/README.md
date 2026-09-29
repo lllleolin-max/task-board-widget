@@ -41,6 +41,8 @@ Linux CI 安装浏览器及系统依赖：`npx playwright install --with-deps ch
 
 在有桌面会话的 Windows 环境运行 `npm run test:electron`。脚本创建临时独立数据目录，验证真实 preload/IPC、任务与课表同步、主题语言字号同步、原生窗口独立置顶、隐藏后重载与恢复，以及课程校验提示可见性。退出后清理临时数据；不会写系统自启动设置。此回归已在 Windows / Electron 44.4.5 运行通过。
 
+课表拖动回归执行解锁、拖动、释放、切回主体并点击设置的完整顺序；同时核验指针捕获释放，以及 Windows 两个窗口的 `WS_EX_TRANSPARENT` 标志均已清除，防止仅检查 DOM 点击而漏掉原生点击穿透。
+
 构建 Windows 安装包后，可将 `TASKBOARD_SMOKE_APP` 环境变量设为 `dist/win-unpacked/resources/app.asar` 再运行同一脚本，验证打包后的应用代码与原生模块加载；测试仍使用开发版 Electron 和临时数据目录，不执行安装或卸载。
 
 ## 自动化边界
