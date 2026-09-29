@@ -249,7 +249,10 @@ function updateInputRegions() {
     // Windows routes the very first click using this native region, without
     // waiting for a cursor poll. A small edge keeps resize handles reachable
     // without letting a wide transparent shadow block the other panel.
-    const shape = box && !box.modal && capturedPanel !== panel ? [box, ...box.extraRects].map((rect) => ({
+    // A docked sibling follows through asynchronous renderer IPC. Keep both
+    // surfaces unclipped during capture so its previous region cannot cut off
+    // the new frame; the non-owner still ignores mouse input below.
+    const shape = box && !box.modal && !capturedPanel ? [box, ...box.extraRects].map((rect) => ({
       x: Math.floor(rect.left) - 4,
       y: Math.floor(rect.top) - 4,
       width: Math.ceil(rect.left + rect.width) - Math.floor(rect.left) + 8,

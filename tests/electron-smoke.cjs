@@ -69,6 +69,53 @@ async function main() {
       font: document.documentElement.style.getPropertyValue('--base-font'),
     }))).toEqual({ language: 'en', theme: 'mo', font: '16px' });
 
+    // A locked, docked schedule still moves when the main panel is dragged.
+    // Read the real Win32 region: DOM visibility misses native clipping.
+    const nativeRegions = (box) => app.evaluate(({ BrowserWindow, screen }, box) => {
+      const koffi = globalThis.taskboardTestRequire('koffi');
+      const user32 = koffi.load('user32.dll'), gdi32 = koffi.load('gdi32.dll');
+      const create = gdi32.func('uintptr_t __stdcall CreateRectRgn(int left, int top, int right, int bottom)');
+      const get = user32.func('int __stdcall GetWindowRgn(uintptr_t hwnd, uintptr_t region)');
+      const contains = gdi32.func('int __stdcall PtInRegion(uintptr_t region, int x, int y)');
+      const release = gdi32.func('int __stdcall DeleteObject(uintptr_t object)');
+      return BrowserWindow.getAllWindows().map(win => {
+        const panel = new URL(win.webContents.getURL()).searchParams.get('panel');
+        const region = create(0, 0, 0, 0);
+        try {
+          const kind = get(win.getNativeWindowHandle().readBigUInt64LE(), region);
+          const scale = screen.getDisplayMatching(win.getBounds()).scaleFactor;
+          const covered = panel !== 'schedule' || !box || [8, box.width / 2, box.width - 8].every(x =>
+            [8, box.height / 2, box.height - 8].every(y => contains(region, Math.round((box.x + x) * scale), Math.round((box.y + y) * scale))));
+          return { panel, kind, covered: !!covered };
+        } finally { release(region); }
+      });
+    }, box);
+    await expect(schedule.locator('#schedule-lock-toggle')).toHaveAttribute('aria-pressed', 'true');
+    await widget.locator('#widget .top').hover({ position: { x: 15, y: 30 } });
+    const dockedBefore = await schedule.locator('#schedule-card').boundingBox();
+    const mainBefore = await widget.locator('#widget').boundingBox();
+    const mainHeader = await widget.locator('#widget .top').boundingBox();
+    await widget.mouse.move(mainHeader.x + 15, mainHeader.y + 30);
+    await widget.mouse.down();
+    await widget.mouse.move(mainHeader.x - 225, mainHeader.y + 70, { steps: 12 });
+    await expect.poll(async () => (await widget.locator('#widget').boundingBox()).x).toBeLessThan(mainBefore.x - 200);
+    if (process.platform === 'win32') {
+      await expect.poll(() => nativeRegions(null).then(windows => windows.every(win => win.kind === 0))).toBe(true);
+    }
+    await widget.mouse.up();
+    await expect.poll(async () => {
+      const main = await widget.locator('#widget').boundingBox();
+      const card = await schedule.locator('#schedule-card').boundingBox();
+      return Math.abs(card.x - main.x) + Math.abs(card.y - main.y - main.height - 12);
+    }).toBeLessThan(2);
+    // Give a delayed storage event/transition time to expose a stale mirror write.
+    await schedule.waitForTimeout(400);
+    const dockedAfter = await schedule.locator('#schedule-card').boundingBox();
+    assert.ok(Math.abs(dockedAfter.height - dockedBefore.height) < 2, 'drag release must preserve the real locked schedule height');
+    if (process.platform === 'win32') {
+      await expect.poll(() => nativeRegions(dockedAfter).then(windows => windows.every(win => win.kind > 0 && win.covered))).toBe(true);
+    }
+
     await schedule.locator('#schedule-edit').click();
     await schedule.locator('#course-name').fill('Electron smoke course');
     await schedule.locator('#course-end').selectOption('450');
@@ -211,7 +258,7 @@ async function main() {
       { panel: 'schedule', visible: false, pinned: false }, { panel: 'widget', visible: true, pinned: false },
     ]);
     assert.deepEqual(errors, [], 'no uncaught errors in Electron renderers');
-    console.log('Electron smoke passed: isolated profile, preload/IPC, tasks/courses, settings sync, docking, schedule drag and native input release, independent pins, native visibility, native event subscription/unhook, minimize recovery, hidden reload and restore.');
+    console.log('Electron smoke passed: isolated profile, preload/IPC, tasks/courses, settings sync, locked docked drag and native clipping, schedule drag and native input release, independent pins, native visibility, native event subscription/unhook, minimize recovery, hidden reload and restore.');
     console.log('Physical first clicks, Win+D, login changes, reboot, tray clicks and macOS behavior require manual validation.');
   } finally {
     if (app) await app.close();

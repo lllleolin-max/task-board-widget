@@ -214,6 +214,39 @@ test('Windows modals and pointer capture own the full input surface and release 
   assert.ok(env.windows.every((win) => win.visible && !win.ignoreMouse));
 });
 
+for (const owner of ['widget', 'schedule']) {
+  test(`Windows ${owner} capture keeps both linked panels unclipped until their latest bounds are restored`, async () => {
+    const env = await desktop({ platform: 'win32' }); env.load();
+    const [widget, schedule] = env.windows;
+    env.send('report-widget-bounds', rect()); env.send('report-schedule-bounds', rect(200, 10));
+    const peer = owner === 'widget' ? 'schedule' : 'widget';
+    const capture = (panel, active) => env.ipcMain.emit('desktop:pointer-capture', env.event(panel), active);
+    capture(owner, true);
+    for (const win of env.windows) {
+      assert.deepEqual(win.shape, [], `${win.panel} must not clip DOM movement from a linked drag`);
+      assert.equal(win.ignoreMouse, win.panel !== owner, 'only the captured panel accepts input');
+    }
+    const shapeChanges = env.windows.map(win => win.shapeChanges);
+    env.send('report-widget-bounds', rect()); env.send('report-schedule-bounds', rect(200, 10));
+    env.send('report-widget-bounds', rect(410, 60)); env.send('report-schedule-bounds', rect(524, 60, 140, 100));
+    capture(peer, false);
+    assert.ok(env.windows.every(win => win.shape.length === 0), 'old and new asynchronous bounds cannot reclip either panel mid-drag');
+    assert.deepEqual(env.windows.map(win => win.shapeChanges), shapeChanges, 'bounds reports do not rebuild native shapes while capture is active');
+    assert.ok(env.windows.every(win => win.ignoreMouse === (win.panel !== owner)), 'the peer cannot release the active capture');
+    capture(owner, false);
+    assert.deepEqual(widget.shape, [{ x: 406, y: 56, width: 108, height: 108 }]);
+    assert.deepEqual(schedule.shape, [{ x: 520, y: 56, width: 148, height: 108 }]);
+    assert.ok(env.windows.every(win => !win.ignoreMouse), 'both current card regions become clickable immediately');
+    env.send(`report-${peer}-bounds`, rect(200, 10, 100, 100, { modal: true }));
+    for (const win of env.windows) {
+      assert.equal(win.ignoreMouse, win.panel !== peer, 'modal input ownership still applies after dragging');
+      assert.equal(win.shape.length, win.panel === peer ? 0 : 1, 'only the modal stays unclipped after release');
+    }
+    env.send(`report-${peer}-bounds`, rect(200, 10));
+    assert.ok(env.windows.every(win => !win.ignoreMouse && win.shape.length === 1));
+  });
+}
+
 test('Windows renderer crash drops its input region until explicit recovery and fresh bounds', async () => {
   const env = await desktop({ platform: 'win32' }); env.load();
   const [widget, schedule] = env.windows;

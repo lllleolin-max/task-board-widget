@@ -1627,6 +1627,10 @@
         height: var(--schedule-height, 220px);
         z-index: 3;
       }
+      .app-stack:not(.schedule-floating):not(.schedule-sized-docked)
+        > .schedule-card {
+        height: auto;
+      }
       .schedule-card.schedule-positioned {
         animation: none !important;
       }
@@ -4425,7 +4429,12 @@
           top: 420,
           width: 352,
           height: 220,
+          customSize: false,
+          dockEdge: "bottom",
         };
+        // An explicit reset is authoritative even in the desktop main panel.
+        if (!pipRestore)
+          writeStorage(SCHEDULE_LAYOUT_KEY, JSON.stringify(scheduleLayout));
         scheduleCollapsed = false;
         localStorage.removeItem("minimal-task-widget-schedule-collapsed-v1");
         syncScheduleCollapse();
@@ -5196,7 +5205,10 @@
         };
       } catch {}
       function persistScheduleLayout() {
-        if (pipRestore) return;
+        // The desktop main panel contains only a hidden schedule mirror. Its
+        // measurements must not overwrite the real schedule window's size.
+        if (pipRestore || (window.desktopBridge && desktopPanel === "widget"))
+          return;
         writeStorage(SCHEDULE_LAYOUT_KEY, JSON.stringify(scheduleLayout));
       }
       function applyScheduleLayout() {

@@ -211,3 +211,114 @@ for (const panel of ['widget', 'schedule']) {
     await expect.poll(() => page.evaluate(panel => window.boundsReports[panel]?.extraRects, panel)).toEqual([]);
   });
 }
+
+const SCHEDULE_LAYOUT = 'minimal-task-widget-schedule-layout-v1';
+
+async function desktopPair(page, context, layout) {
+  let schedule, latest;
+  await page.exposeFunction('relayWidgetBounds', async bounds => {
+    latest = bounds;
+    if (schedule && !schedule.isClosed()) {
+      await schedule.evaluate(value => window.receiveWidgetBounds?.(value), bounds);
+    }
+  });
+  const bridge = (target, initial) => target.addInitScript(initial => {
+    window.desktopBridge = {
+      reportWidgetBounds: bounds => { window.relayWidgetBounds?.(bounds); },
+      reportScheduleBounds: () => {},
+      getPins: async () => ({ widget: false, schedule: false }),
+      setLocale: () => {},
+      onWidgetBounds: callback => { window.receiveWidgetBounds = callback; },
+      getWidgetBounds: async () => initial,
+      onCourseEnabled: () => {},
+      setCourseEnabled: () => {},
+    };
+  }, initial);
+  await page.evaluate(({ key, layout }) => {
+    localStorage.setItem(key, JSON.stringify(layout));
+    localStorage.setItem('minimal-task-widget-settings-v1', JSON.stringify({ courseEnabled: false }));
+  }, { key: SCHEDULE_LAYOUT, layout });
+  await bridge(page, null);
+  await page.goto(`${url}?panel=widget`);
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  // A disabled hidden mirror measures zero height; it must not replace the
+  // schedule window's saved dimensions with its own fallback dimensions.
+  expect(await page.evaluate(key => JSON.parse(localStorage.getItem(key)), SCHEDULE_LAYOUT)).toEqual(layout);
+  await page.locator('#settings-open').click();
+  await page.locator('#course-toggle').click();
+  await page.locator('#settings-close').click();
+  schedule = await context.newPage();
+  await bridge(schedule, latest);
+  await schedule.goto(`${url}?panel=schedule`);
+  await expect(schedule.locator('#schedule-card')).toBeVisible();
+  await expect(schedule.locator('#schedule-lock-toggle')).toHaveAttribute('aria-pressed', 'true');
+  await schedule.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  return schedule;
+}
+
+async function movePointer(page, locator, dx, dy, position) {
+  const box = await locator.boundingBox();
+  const x = box.x + (position?.x ?? box.width / 2);
+  const y = box.y + (position?.y ?? box.height / 2);
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x + dx, y + dy, { steps: 15 });
+  await page.mouse.up();
+}
+
+for (const { name, custom, savedHeight, expectedHeight } of [
+  { name: 'default', custom: false, savedHeight: 400, expectedHeight: 400 },
+  { name: 'legacy default', custom: false, savedHeight: 220, expectedHeight: 400 },
+  { name: 'custom', custom: true, savedHeight: 340, expectedHeight: 340 },
+]) {
+  test(`desktop widget movement preserves schedule-owned ${name} dimensions`, async ({ page, context }) => {
+    const layout = {
+      floating: false, left: 160, top: 420, width: custom ? 420 : 352,
+      height: savedHeight, dockEdge: 'bottom', ...(custom ? { customSize: true } : {}),
+    };
+    const schedule = await desktopPair(page, context, layout);
+    const card = schedule.locator('#schedule-card');
+    await expect.poll(async () => (await card.boundingBox()).height).toBe(expectedHeight);
+    const saved = await page.evaluate(key => JSON.parse(localStorage.getItem(key)), SCHEDULE_LAYOUT);
+    await movePointer(page, page.locator('#widget .top'), -350, 40, { x: 15, y: 30 });
+    await movePointer(page, page.locator('[data-resize="se"]'), 60, 40);
+    await expect.poll(async () => {
+      const main = await page.locator('#widget').boundingBox(), docked = await card.boundingBox();
+      return {
+        gap: Math.round(docked.y - main.y - main.height),
+        left: Math.round(docked.x - main.x),
+        width: Math.round(docked.width - (custom ? layout.width : main.width)),
+        height: Math.round(docked.height),
+      };
+    }).toEqual({ gap: 12, left: 0, width: 0, height: expectedHeight });
+    expect(await page.evaluate(key => JSON.parse(localStorage.getItem(key)), SCHEDULE_LAYOUT)).toEqual(saved);
+    await expect(schedule.locator('#schedule-lock-toggle')).toHaveAttribute('aria-pressed', 'true');
+    await schedule.close();
+  });
+}
+
+test('desktop widget reset clears remote schedule layout without deleting courses', async ({ page, context }) => {
+  const schedule = await desktopPair(page, context, {
+    floating: true, left: 100, top: 300, width: 450, height: 350,
+    customSize: true, dockEdge: 'right',
+  });
+  await expect(schedule.locator('#app-stack')).toHaveClass(/schedule-floating/);
+  await schedule.locator('#schedule-edit').click();
+  await schedule.locator('#course-name').fill('布局重置后保留的课程');
+  await schedule.locator('#schedule-save').click();
+  const courses = await schedule.evaluate(() => localStorage.getItem('minimal-task-widget-schedule-v1'));
+  await page.locator('#settings-open').click();
+  await page.locator('#reset-defaults').click();
+  await expect(schedule.locator('#schedule-card')).not.toBeVisible();
+  await expect(schedule.locator('#app-stack')).not.toHaveClass(/schedule-floating|schedule-side-docked|schedule-sized-docked/);
+  expect(await page.evaluate(key => JSON.parse(localStorage.getItem(key)), SCHEDULE_LAYOUT)).toMatchObject({
+    floating: false, customSize: false, dockEdge: 'bottom',
+  });
+  await page.locator('#settings-open').click();
+  await page.locator('#course-toggle').click();
+  await page.locator('#settings-close').click();
+  await expect(schedule.locator('#schedule-card')).toBeVisible();
+  await expect(schedule.locator('.schedule-course')).toContainText('布局重置后保留的课程');
+  expect(await schedule.evaluate(() => localStorage.getItem('minimal-task-widget-schedule-v1'))).toBe(courses);
+  await schedule.close();
+});
