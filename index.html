@@ -1571,6 +1571,8 @@
       .schedule-card {
         width: 100%;
         position: relative;
+        display: flex;
+        flex-direction: column;
         z-index: 1;
         background: var(--paper);
         border: 1px solid rgba(40, 40, 32, 0.07);
@@ -1726,10 +1728,8 @@
         min-width: 250px;
         min-height: 100px;
       }
-      .app-stack.schedule-floating
-        > .schedule-card.schedule-free
-        .schedule-scroll {
-        height: calc(100% - 54px);
+      .app-stack.schedule-floating .schedule-scroll,
+      .app-stack.schedule-sized-docked .schedule-scroll {
         max-height: none;
       }
       .schedule-card.schedule-free .schedule-empty {
@@ -1747,6 +1747,7 @@
       }
       .schedule-head {
         display: flex;
+        flex-shrink: 0;
         align-items: center;
         justify-content: space-between;
         padding: 14px 17px;
@@ -1828,6 +1829,8 @@
         border-color: var(--green);
       }
       .schedule-scroll {
+        flex: 1 1 auto;
+        min-height: 0;
         max-height: 340px;
         overflow: auto;
         scrollbar-width: thin;

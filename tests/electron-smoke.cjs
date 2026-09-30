@@ -11,8 +11,20 @@ async function main() {
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'taskboard-smoke-'));
   const profile = path.join(temporary, 'profile');
   const entry = path.join(temporary, 'entry.cjs');
+  const automationBackgroundSwitches = [
+    'disable-backgrounding-occluded-windows',
+    'disable-background-timer-throttling',
+    'disable-renderer-backgrounding',
+  ];
   await fs.mkdir(profile);
-  await fs.writeFile(entry, `const { app } = require('electron');\napp.setPath('userData', ${JSON.stringify(profile)});\nglobalThis.taskboardTestRequire = require('node:module').createRequire(${JSON.stringify(path.join(appRoot, 'package.json'))});\nrequire(${JSON.stringify(path.join(appRoot, 'main.cjs'))});\n`);
+  // Playwright injects these before the entry point. Keep production's native
+  // occlusion/background behavior so automation cannot hide a frozen renderer.
+  await fs.writeFile(entry, `const { app } = require('electron');
+for (const name of ${JSON.stringify(automationBackgroundSwitches)}) app.commandLine.removeSwitch(name);
+app.setPath('userData', ${JSON.stringify(profile)});
+globalThis.taskboardTestRequire = require('node:module').createRequire(${JSON.stringify(path.join(appRoot, 'package.json'))});
+require(${JSON.stringify(path.join(appRoot, 'main.cjs'))});
+`);
   let app;
   const errors = [];
   try {
@@ -20,6 +32,8 @@ async function main() {
     const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
     app = await _electron.launch({ executablePath: require('electron'), args: [entry], cwd: root, env, timeout: 30000 });
     app.on('window', (page) => page.on('pageerror', (error) => errors.push(error.message)));
+    assert.deepEqual(await app.evaluate(({ app }, names) => names.filter(name => app.commandLine.hasSwitch(name)), automationBackgroundSwitches), [],
+      'Electron smoke must not disable production background throttling through Playwright switches');
     await expect.poll(() => app.windows().length).toBe(2);
     const widget = app.windows().find((page) => page.url().includes('panel=widget'));
     const schedule = app.windows().find((page) => page.url().includes('panel=schedule'));
@@ -197,6 +211,15 @@ async function main() {
         });
       })).toBe(true);
       assert.deepEqual(await widget.evaluate(() => window.desktopBridge.getPins()), { widget: false, schedule: false });
+      // Hand activation back while this process still owns the foreground.
+      // Destroying it first lets Windows activate an unrelated application.
+      await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()
+        .find(win => win.webContents.getURL().includes('panel=schedule')).focus());
+      await expect.poll(() => app.evaluate(({ BrowserWindow }) => {
+        const handles = BrowserWindow.getAllWindows().filter(win => win !== globalThis.taskboardTestForeground)
+          .map(win => win.getNativeWindowHandle());
+        return globalThis.taskboardTestRequire('./windows-desktop.cjs').foregroundContext(handles);
+      })).toBe('panel');
       await app.evaluate(() => globalThis.taskboardTestForeground.destroy());
       // Exercise persistent native callbacks in Electron's actual message loop.
       await app.evaluate(({ BrowserWindow }) => {
@@ -216,8 +239,13 @@ async function main() {
         await new Promise(resolve => setTimeout(resolve, 100));
         return globalThis.taskboardNativeEvents === count;
       }), true, 'unhooked native callbacks must not run on subsequent foreground changes');
-      await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((win) => win.webContents.getURL().includes('panel=schedule')).focus());
-      await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((win) => win.webContents.getURL().includes('panel=schedule')).isFocused())).toBe(true);
+      await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()
+        .find(win => win.webContents.getURL().includes('panel=schedule')).focus());
+      await expect.poll(() => app.evaluate(({ BrowserWindow }) => {
+        const desktop = globalThis.taskboardTestRequire('./windows-desktop.cjs');
+        const handles = BrowserWindow.getAllWindows().map(win => win.getNativeWindowHandle());
+        return { foreground: desktop.foregroundContext(handles), topmost: handles.every(handle => desktop.isTopmost(handle)) };
+      })).toEqual({ foreground: 'panel', topmost: true });
       // Simulate an OS-level demotion without changing Chromium's requested
       // level. The native state must be repaired even if its cached value differs.
       await app.evaluate(({ BrowserWindow }) => {
@@ -226,10 +254,27 @@ async function main() {
           .func('int __stdcall SetWindowPos(uintptr_t hwnd, intptr_t after, int x, int y, int width, int height, unsigned int flags)');
         if (!setPosition(win.getNativeWindowHandle().readBigUInt64LE(), -2, 0, 0, 0, 0, 0x213)) throw new Error('Cannot inject native demotion');
       });
-      await expect.poll(() => app.evaluate(({ BrowserWindow }) => {
-        const desktop = globalThis.taskboardTestRequire('./windows-desktop.cjs');
-        return BrowserWindow.getAllWindows().every(win => desktop.isTopmost(win.getNativeWindowHandle()));
-      })).toBe(true);
+      let recoveryState;
+      try {
+        await expect.poll(async () => {
+          recoveryState = await app.evaluate(({ BrowserWindow }) => {
+            const desktop = globalThis.taskboardTestRequire('./windows-desktop.cjs');
+            const windows = BrowserWindow.getAllWindows();
+            return {
+              foreground: desktop.foregroundContext(windows.map(win => win.getNativeWindowHandle())),
+              windows: windows.map(win => ({
+                panel: new URL(win.webContents.getURL()).searchParams.get('panel'),
+                native: desktop.isTopmost(win.getNativeWindowHandle()), cached: win.isAlwaysOnTop(),
+                focused: win.isFocused(),
+              })),
+            };
+          });
+          return recoveryState.foreground === 'panel' && recoveryState.windows.every(win => win.native);
+        }).toBe(true);
+      } catch (error) {
+        console.error('Native demotion recovery state:', JSON.stringify(recoveryState));
+        throw error;
+      }
       await app.evaluate(({ BrowserWindow }) => {
         const win = BrowserWindow.getAllWindows().find((item) => item.webContents.getURL().includes('panel=widget'));
         win.minimize();
