@@ -297,6 +297,7 @@
       .top {
         padding: 20px 23px 18px;
         border-bottom: 1px solid var(--line);
+        user-select: none;
       }
       .topline {
         display: flex;
@@ -1569,6 +1570,7 @@
         z-index: 2;
       }
       .schedule-card {
+        --schedule-scroll-max-height: 340px;
         width: 100%;
         position: relative;
         display: flex;
@@ -1637,6 +1639,11 @@
         animation: none !important;
       }
       .schedule-card.schedule-following {
+        transition: none !important;
+        animation: none !important;
+      }
+      /* Native hit regions must match the visible card, including snap frames. */
+      .electron-shell .schedule-card {
         transition: none !important;
         animation: none !important;
       }
@@ -1748,6 +1755,7 @@
       .schedule-head {
         display: flex;
         flex-shrink: 0;
+        user-select: none;
         align-items: center;
         justify-content: space-between;
         padding: 14px 17px;
@@ -1831,7 +1839,7 @@
       .schedule-scroll {
         flex: 1 1 auto;
         min-height: 0;
-        max-height: 340px;
+        max-height: var(--schedule-scroll-max-height);
         overflow: auto;
         scrollbar-width: thin;
       }
@@ -4224,8 +4232,14 @@
         true,
       );
       widgetHeader.addEventListener("pointerdown", (e) => {
-        if (widget.classList.contains("locked") || e.target.closest("button"))
+        if (
+          widget.classList.contains("locked") ||
+          e.button !== 0 ||
+          e.target.closest("button")
+        )
           return;
+        // Native text dragging cancels pointer capture on a subsequent drag.
+        e.preventDefault();
         const r = widget.getBoundingClientRect();
         widgetDrag = {
           id: e.pointerId,
@@ -4257,22 +4271,12 @@
         widget.style.height = widgetDrag.height + "px";
         widget.style.position = "fixed";
         widget.style.margin = "0";
-        widget.style.left =
-          Math.max(
-            0,
-            Math.min(
-              activeWindow().innerWidth - widget.offsetWidth,
-              e.clientX - widgetDrag.x,
-            ),
-          ) + "px";
-        widget.style.top =
-          Math.max(
-            0,
-            Math.min(
-              activeWindow().innerHeight - widget.offsetHeight,
-              e.clientY - widgetDrag.y,
-            ),
-          ) + "px";
+        const position = clampWidgetPosition(
+          e.clientX - widgetDrag.x,
+          e.clientY - widgetDrag.y,
+        );
+        widget.style.left = position.left + "px";
+        widget.style.top = position.top + "px";
         syncDockedScheduleToWidget();
         reportWidgetBounds();
       });
@@ -5262,17 +5266,52 @@
       function scheduleDockRect(edge = scheduleLayout.dockEdge || "bottom") {
         const w = widget.getBoundingClientRect(),
           width = scheduleLayout.customSize ? scheduleLayout.width : w.width,
-          height = scheduleLayout.customSize
-            ? scheduleLayout.height
-            : scheduleCard.getBoundingClientRect().height ||
-              scheduleLayout.height,
+          style = getComputedStyle(scheduleCard),
+          frameHeight = scheduleHead.getBoundingClientRect().height +
+            parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth),
+          height = scheduleCard.hidden ? scheduleLayout.height
+            : scheduleCollapsed ? frameHeight
+            : scheduleLayout.customSize ? scheduleLayout.height
+            : frameHeight + Math.min(scheduleGrid.scrollHeight,
+              parseFloat(style.getPropertyValue("--schedule-scroll-max-height"))),
           gap = SCHEDULE_DOCK_GAP;
         if (edge === "top")
-          return { left: w.left, top: w.top - height - gap, width };
+          return { left: w.left, top: w.top - height - gap, width, height };
         if (edge === "left")
-          return { left: w.left - width - gap, top: w.top, width };
-        if (edge === "right") return { left: w.right + gap, top: w.top, width };
-        return { left: w.left, top: w.bottom + gap, width };
+          return { left: w.left - width - gap, top: w.top, width, height };
+        if (edge === "right") return { left: w.right + gap, top: w.top, width, height };
+        return { left: w.left, top: w.bottom + gap, width, height };
+      }
+      function clampWidgetPosition(left, top) {
+        const widgetRect = widget.getBoundingClientRect(),
+          viewport = activeWindow();
+        let minLeft = 0,
+          minTop = 0,
+          maxLeft = viewport.innerWidth - widgetRect.width,
+          maxTop = viewport.innerHeight - widgetRect.height;
+        if (!scheduleCard.hidden && !scheduleLayout.floating) {
+          const home = scheduleDockRect(),
+            dx = home.left - widgetRect.left,
+            dy = home.top - widgetRect.top,
+            groupLeft = Math.min(0, dx),
+            groupTop = Math.min(0, dy),
+            groupRight = Math.max(widgetRect.width, dx + home.width),
+            groupBottom = Math.max(widgetRect.height, dy + home.height);
+          // Keep the docked pair visible on each axis where it fits. If it
+          // cannot fit, retain the widget's reachable bounds without resizing.
+          if (groupRight - groupLeft <= viewport.innerWidth) {
+            minLeft = -groupLeft;
+            maxLeft = viewport.innerWidth - groupRight;
+          }
+          if (groupBottom - groupTop <= viewport.innerHeight) {
+            minTop = -groupTop;
+            maxTop = viewport.innerHeight - groupBottom;
+          }
+        }
+        return {
+          left: Math.max(minLeft, Math.min(maxLeft, left)),
+          top: Math.max(minTop, Math.min(maxTop, top)),
+        };
       }
       syncDockedScheduleToWidget = () => {
         if (scheduleLayout.floating) return;
@@ -5312,6 +5351,7 @@
         animate = true,
         edge = scheduleLayout.dockEdge || "bottom",
       ) {
+        animate = animate && !window.desktopBridge;
         const before = scheduleCard.getBoundingClientRect();
         scheduleLayout.dockEdge = edge;
         const home = scheduleDockRect(edge),
@@ -5598,6 +5638,7 @@
       scheduleHead.addEventListener("pointerdown", (e) => {
         if (scheduleLocked || e.button !== 0 || e.target.closest("button"))
           return;
+        e.preventDefault();
         const r = scheduleCard.getBoundingClientRect();
         scheduleDrag = {
           id: e.pointerId,
@@ -5613,16 +5654,11 @@
         };
       });
       function getScheduleSnapTarget() {
-        const w = widget.getBoundingClientRect(),
-          width = scheduleLayout.width,
-          height = scheduleLayout.height,
-          gap = SCHEDULE_DOCK_GAP,
-          targets = [
-            { edge: "bottom", left: w.left, top: w.bottom + gap },
-            { edge: "top", left: w.left, top: w.top - height - gap },
-            { edge: "right", left: w.right + gap, top: w.top },
-            { edge: "left", left: w.left - width - gap, top: w.top },
-          ];
+        const viewport = activeWindow(),
+          targets = ["bottom", "top", "right", "left"].map((edge) => ({
+            edge,
+            ...scheduleDockRect(edge),
+          }));
         const matches = targets
           .map((target) => {
             const horizontal = Math.abs(scheduleLayout.left - target.left),
@@ -5633,7 +5669,13 @@
             return {
               ...target,
               score: axis + align,
-              valid: axis < 64 && align < 90,
+              valid:
+                axis < 64 &&
+                align < 90 &&
+                target.left >= 0 &&
+                target.top >= 0 &&
+                target.left + target.width <= viewport.innerWidth &&
+                target.top + target.height <= viewport.innerHeight,
             };
           })
           .filter((target) => target.valid)

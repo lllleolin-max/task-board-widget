@@ -225,7 +225,7 @@ async function desktopPair(page, context, layout) {
   const bridge = (target, initial) => target.addInitScript(initial => {
     window.desktopBridge = {
       reportWidgetBounds: bounds => { window.relayWidgetBounds?.(bounds); },
-      reportScheduleBounds: () => {},
+      reportScheduleBounds: bounds => { window.scheduleBounds = bounds; },
       getPins: async () => ({ widget: false, schedule: false }),
       setLocale: () => {},
       onWidgetBounds: callback => { window.receiveWidgetBounds = callback; },
@@ -322,3 +322,242 @@ test('desktop widget reset clears remote schedule layout without deleting course
   expect(await schedule.evaluate(() => localStorage.getItem('minimal-task-widget-schedule-v1'))).toBe(courses);
   await schedule.close();
 });
+
+for (const { edge, width, height } of [
+  { edge: 'left', width: 566, height: 269 },
+  { edge: 'right', width: 600, height: 500 },
+  { edge: 'top', width: 700, height: 300 },
+  { edge: 'bottom', width: 900, height: 550 },
+]) {
+  test(`dragging the widget to the ${edge} edge keeps its custom docked schedule inside the viewport`, async ({ page, context }) => {
+    const schedule = await desktopPair(page, context, {
+      floating: false, left: 160, top: 420, width, height,
+      customSize: true, dockEdge: edge,
+    });
+    const main = page.locator('#widget'), card = schedule.locator('#schedule-card');
+    const before = await main.boundingBox();
+    const viewport = page.viewportSize();
+    const start = { x: before.x + 15, y: before.y + 25 };
+    await page.mouse.move(start.x, start.y);
+    await page.mouse.down();
+    await page.mouse.move(
+      edge === 'left' ? 2 : edge === 'right' ? viewport.width - 2 : start.x,
+      edge === 'top' ? 2 : edge === 'bottom' ? viewport.height - 2 : start.y,
+      { steps: 15 },
+    );
+    async function expectBothInside() {
+      await expect.poll(async () => {
+        const boxes = await Promise.all([main.boundingBox(), card.boundingBox()]);
+        return boxes.every(rect => rect.x >= -0.1 && rect.y >= -0.1 &&
+          rect.x + rect.width <= viewport.width + 0.1 && rect.y + rect.height <= viewport.height + 0.1);
+      }, { message: 'Both actual panel rectangles must remain visible while dragging and after release' }).toBe(true);
+    }
+    await expectBothInside();
+    await page.mouse.up();
+    await expectBothInside();
+    const after = await card.boundingBox();
+    expect({ width: after.width, height: after.height }).toEqual({ width, height });
+    expect(await page.evaluate(key => JSON.parse(localStorage.getItem(key)), SCHEDULE_LAYOUT))
+      .toMatchObject({ width, height, customSize: true, dockEdge: edge });
+    await schedule.close();
+  });
+}
+
+test('floating to left snap keeps reported bounds current and allows a complete second widget drag', async ({ page, context }) => {
+  const schedule = await desktopPair(page, context, {
+    floating: true, left: 100, top: 500, width: 566, height: 269,
+    customSize: true, dockEdge: 'bottom',
+  });
+  await page.bringToFront();
+  await movePointer(page, page.locator('#widget .top'), -100, 180, { x: 15, y: 25 });
+  const main = await page.locator('#widget').boundingBox();
+  await schedule.bringToFront();
+  await schedule.locator('#schedule-lock-toggle').click();
+  const card = schedule.locator('#schedule-card'), head = await schedule.locator('.schedule-head').boundingBox();
+  await schedule.mouse.move(head.x + 15, head.y + 25);
+  await schedule.mouse.down();
+  await schedule.mouse.move(main.x - 566 - 12 + 20 + 15, main.y + 20 + 25, { steps: 15 });
+  await schedule.evaluate(() => {
+    window.snapFrames = [];
+    window.observeSnap = true;
+    const sample = () => {
+      if (!window.observeSnap) return;
+      const rect = document.getElementById('schedule-card').getBoundingClientRect(), report = window.scheduleBounds;
+      if (report) window.snapFrames.push({
+        left: rect.left - report.left, top: rect.top - report.top,
+        right: rect.right - report.left - report.width,
+        bottom: rect.bottom - report.top - report.height,
+      });
+      requestAnimationFrame(sample);
+    };
+    requestAnimationFrame(sample);
+  });
+  await schedule.mouse.up();
+  // Include the former 320ms FLIP animation and its 380ms cleanup callback.
+  await schedule.waitForTimeout(450);
+  const frames = await schedule.evaluate(() => { window.observeSnap = false; return window.snapFrames; });
+  expect(frames.length).toBeGreaterThan(5);
+  expect.soft(frames.filter(frame => frame.left < -1 || frame.top < -1 || frame.right > 1 || frame.bottom > 1),
+    'A snapped card must fit the reported native region on every observed frame').toEqual([]);
+  await expect(schedule.locator('#app-stack')).not.toHaveClass(/schedule-floating/);
+  const docked = await card.boundingBox();
+  expect(Math.round(main.x - docked.x - docked.width)).toBe(12);
+  await schedule.locator('#schedule-lock-toggle').click();
+  await expect(schedule.locator('#schedule-lock-toggle')).toHaveAttribute('aria-pressed', 'true');
+  await page.evaluate(() => {
+    window.nativeDragEvents = [];
+    for (const event of ['dragstart', 'pointercancel']) document.addEventListener(event,
+      () => window.nativeDragEvents.push(event), true);
+    // A selection left by an earlier interaction must not turn a panel drag
+    // into the browser's native text drag, which cancels pointer capture.
+    const selection = window.getSelection(), range = document.createRange();
+    range.selectNodeContents(document.querySelector('#widget .top'));
+    selection.removeAllRanges();
+    selection.addRange(range);
+  });
+  await page.bringToFront();
+  await movePointer(page, page.locator('#widget .top'), -100, 40, { x: 15, y: 25 });
+  const moved = await page.locator('#widget').boundingBox();
+  expect.soft(moved.x).toBe(main.x - 100);
+  expect.soft(moved.y).toBe(main.y + 40);
+  expect(await page.evaluate(() => window.nativeDragEvents)).toEqual([]);
+  await expect.poll(async () => {
+    const rect = await card.boundingBox();
+    return { gap: Math.round(moved.x - rect.x - rect.width), top: Math.round(rect.y - moved.y) };
+  }).toEqual({ gap: 12, top: 0 });
+  expect(await page.evaluate(key => JSON.parse(localStorage.getItem(key)), SCHEDULE_LAYOUT))
+    .toMatchObject({ floating: false, dockEdge: 'left', customSize: true, width: 566, height: 269 });
+  await schedule.close();
+});
+
+test('dragging a floating schedule near an off-screen left dock keeps it floating and fully visible', async ({ page, context }) => {
+  const schedule = await desktopPair(page, context, {
+    floating: true, left: 100, top: 500, width: 566, height: 269,
+    customSize: true, dockEdge: 'bottom',
+  });
+  await page.bringToFront();
+  const initial = await page.locator('#widget').boundingBox();
+  await movePointer(page, page.locator('#widget .top'), 540 - initial.x, 300 - initial.y, { x: 15, y: 25 });
+  const main = await page.locator('#widget').boundingBox();
+  await schedule.bringToFront();
+  await schedule.locator('#schedule-lock-toggle').click();
+  const head = await schedule.locator('.schedule-head').boundingBox();
+  await schedule.mouse.move(head.x + 15, head.y + 25);
+  await schedule.mouse.down();
+  await schedule.mouse.move(8 + 15, main.y + 20 + 25, { steps: 15 });
+  await schedule.mouse.up();
+  await schedule.waitForTimeout(450);
+  const card = await schedule.locator('#schedule-card').boundingBox();
+  expect.soft(card.x).toBeGreaterThanOrEqual(0);
+  await expect(schedule.locator('#app-stack')).toHaveClass(/schedule-floating/);
+  expect(await page.locator('#widget').boundingBox()).toEqual(main);
+  expect(await page.evaluate(key => JSON.parse(localStorage.getItem(key)), SCHEDULE_LAYOUT))
+    .toMatchObject({ floating: true, customSize: true, width: 566, height: 269 });
+  await schedule.close();
+});
+
+test('left snap feasibility uses the resized widget width for a default floating schedule', async ({ page, context }) => {
+  const schedule = await desktopPair(page, context, {
+    floating: true, left: 80, top: 550, width: 352, height: 400,
+    customSize: false, dockEdge: 'bottom',
+  });
+  await page.bringToFront();
+  const initial = await page.locator('#widget').boundingBox();
+  await movePointer(page, page.locator('#widget .top'), 400 - initial.x, 180 - initial.y, { x: 15, y: 25 });
+  await movePointer(page, page.locator('[data-resize="se"]'), 148, 0);
+  const main = await page.locator('#widget').boundingBox();
+  expect(main.width).toBe(500);
+  await schedule.bringToFront();
+  await schedule.locator('#schedule-lock-toggle').click();
+  const head = await schedule.locator('.schedule-head').boundingBox();
+  await schedule.mouse.move(head.x + 15, head.y + 25);
+  await schedule.mouse.down();
+  // 36px fits a 352px floating card beside the widget, but the final default
+  // dock would adopt the widget's 500px width and extend to -112px.
+  await schedule.mouse.move(36 + 15, main.y + 25, { steps: 15 });
+  await schedule.mouse.up();
+  await schedule.waitForTimeout(450);
+  const card = await schedule.locator('#schedule-card').boundingBox();
+  expect.soft(card.x).toBeGreaterThanOrEqual(0);
+  await expect(schedule.locator('#app-stack')).toHaveClass(/schedule-floating/);
+  expect(card.width).toBe(352);
+  expect(await page.locator('#widget').boundingBox()).toEqual(main);
+  await schedule.close();
+});
+
+test('bottom snap feasibility uses the natural docked height rather than the shorter floating height', async ({ page, context }) => {
+  const schedule = await desktopPair(page, context, {
+    floating: true, left: 100, top: 120, width: 352, height: 220,
+    customSize: false, dockEdge: 'bottom',
+  });
+  const card = schedule.locator('#schedule-card');
+  await expect.poll(async () => (await card.boundingBox()).height).toBe(220);
+  await page.bringToFront();
+  const initial = await page.locator('#widget').boundingBox();
+  await movePointer(page, page.locator('#widget .top'), 500 - initial.x,
+    700 - initial.height - initial.y, { x: 15, y: 25 });
+  const main = await page.locator('#widget').boundingBox();
+  await schedule.bringToFront();
+  await schedule.locator('#schedule-lock-toggle').click();
+  const head = await schedule.locator('.schedule-head').boundingBox();
+  await schedule.mouse.move(head.x + 15, head.y + 25);
+  await schedule.mouse.down();
+  // The 220px floating card fits here. Its 400px natural docked height would
+  // extend below the viewport when attached at the widget's bottom + 12px.
+  await schedule.mouse.move(main.x + 20 + 15, main.y + main.height + 12 + 20 + 25, { steps: 15 });
+  await schedule.mouse.up();
+  await schedule.waitForTimeout(450);
+  const floating = await card.boundingBox();
+  expect.soft(floating.y + floating.height).toBeLessThanOrEqual(page.viewportSize().height);
+  await expect(schedule.locator('#app-stack')).toHaveClass(/schedule-floating/);
+  expect({ width: floating.width, height: floating.height }).toEqual({ width: 352, height: 220 });
+  expect(await page.locator('#widget').boundingBox()).toEqual(main);
+  await schedule.close();
+});
+
+test('docked dragging preserves a valid middle-screen pointer destination', async ({ page, context }) => {
+  const schedule = await desktopPair(page, context, {
+    floating: false, left: 160, top: 420, width: 600, height: 500,
+    customSize: true, dockEdge: 'right',
+  });
+  const before = await page.locator('#widget').boundingBox();
+  await movePointer(page, page.locator('#widget .top'), -750, 120, { x: 15, y: 25 });
+  const after = await page.locator('#widget').boundingBox();
+  expect(after.x).toBe(before.x - 750);
+  expect(after.y).toBe(before.y + 120);
+  await schedule.close();
+});
+
+test('a floating schedule does not constrain the widget at the viewport edge', async ({ page, context }) => {
+  const schedule = await desktopPair(page, context, {
+    floating: true, left: 100, top: 300, width: 600, height: 500,
+    customSize: true, dockEdge: 'left',
+  });
+  const card = schedule.locator('#schedule-card');
+  await expect.poll(async () => (await card.boundingBox()).y).toBe(300);
+  const before = await card.boundingBox();
+  await movePointer(page, page.locator('#widget .top'), -1000, 0, { x: 15, y: 25 });
+  expect((await page.locator('#widget').boundingBox()).x).toBe(0);
+  expect(await card.boundingBox()).toEqual(before);
+  await schedule.close();
+});
+
+for (const { edge, width, height } of [
+  { edge: 'left', width: 1000, height: 300 },
+  { edge: 'bottom', width: 500, height: 900 },
+]) {
+  test(`an oversized ${edge}-docked combination keeps the widget reachable without shrinking the custom schedule`, async ({ page, context }) => {
+    const schedule = await desktopPair(page, context, {
+      floating: false, left: 160, top: 420, width, height,
+      customSize: true, dockEdge: edge,
+    });
+    await movePointer(page, page.locator('#widget .top'), edge === 'left' ? -1000 : 0,
+      edge === 'bottom' ? 1000 : 0, { x: 15, y: 25 });
+    const main = await page.locator('#widget').boundingBox();
+    if (edge === 'left') expect(main.x).toBe(0);
+    else expect(main.y + main.height).toBe(page.viewportSize().height);
+    const card = await schedule.locator('#schedule-card').boundingBox();
+    expect({ width: card.width, height: card.height }).toEqual({ width, height });
+    await schedule.close();
+  });
+}

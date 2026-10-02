@@ -20,6 +20,7 @@ async function desktop({ lock = true, platform = 'darwin', packaged = true, floa
     send(channel, value) { this.messages.push([channel, plain(value)]); }
     setWindowOpenHandler(handler) { this.openHandler = handler; }
     reload() { this.reloads = (this.reloads || 0) + 1; this.emit('did-start-loading'); }
+    invalidate() { this.invalidations = (this.invalidations || 0) + 1; }
   }
   class Window extends EventEmitter {
     constructor(options) {
@@ -246,6 +247,60 @@ for (const owner of ['widget', 'schedule']) {
     assert.ok(env.windows.every(win => !win.ignoreMouse && win.shape.length === 1));
   });
 }
+
+test('Windows repaints the following panel once after capture restores both input surfaces', async () => {
+  const env = await desktop({ platform: 'win32' }); env.load();
+  const [widget, schedule] = env.windows;
+  env.send('report-widget-bounds', rect()); env.send('report-schedule-bounds', rect(200, 10));
+  const before = env.windows.map(win => win.webContents.invalidations || 0);
+  env.send('pointer-capture', true);
+  env.send('report-widget-bounds', rect(410, 60));
+  env.send('report-schedule-bounds', rect(524, 60, 140, 100));
+  assert.deepEqual(env.windows.map(win => win.webContents.invalidations || 0), before,
+    'following bounds during capture do not request full repaints');
+  const invalidate = schedule.webContents.invalidate.bind(schedule.webContents);
+  schedule.webContents.invalidate = () => {
+    assert.deepEqual(widget.shape, [{ x: 406, y: 56, width: 108, height: 108 }]);
+    assert.deepEqual(schedule.shape, [{ x: 520, y: 56, width: 148, height: 108 }]);
+    assert.ok(env.windows.every(win => !win.ignoreMouse), 'repaint follows all native shape and input changes');
+    invalidate();
+  };
+  env.send('pointer-capture', false);
+  assert.deepEqual(env.windows.map(win => win.webContents.invalidations || 0), [before[0], before[1] + 1],
+    'only the following panel changed from ignoring to accepting mouse input');
+  env.send('pointer-capture', false);
+  assert.equal(schedule.webContents.invalidations, before[1] + 1, 'a duplicate release does not repaint again');
+});
+
+test('Windows bounds updates and desktop checks do not repeatedly invalidate unchanged input state', async () => {
+  const env = await desktop({ platform: 'win32' });
+  assert.ok(env.windows.every(win => !win.webContents.invalidations), 'an unknown initial input state does not request a repaint');
+  env.load();
+  env.send('report-widget-bounds', rect()); env.send('report-schedule-bounds', rect(200, 10));
+  const before = env.windows.map(win => win.webContents.invalidations || 0);
+  for (let offset = 1; offset <= 3; offset++) {
+    env.send('report-widget-bounds', rect(10 + offset, 10));
+    env.send('report-schedule-bounds', rect(200 + offset, 10));
+    env.foreground('desktop'); env.desktopEvent('desktop');
+  }
+  assert.deepEqual(env.windows.map(win => win.webContents.invalidations || 0), before);
+});
+
+test('Windows hiding or crashing a panel does not repaint the hidden surface', async () => {
+  for (const reason of ['hide', 'crash']) {
+    const env = await desktop({ platform: 'win32' }); env.load();
+    const [widget, schedule] = env.windows;
+    env.send('report-widget-bounds', rect()); env.send('report-schedule-bounds', rect(200, 10));
+    env.send('pointer-capture', true);
+    const before = env.windows.map(win => win.webContents.invalidations || 0);
+    if (reason === 'hide') env.trays[0].emit('click');
+    else schedule.webContents.emit('render-process-gone');
+    env.send('pointer-capture', false);
+    assert.equal(schedule.visible, false);
+    assert.equal(schedule.webContents.invalidations || 0, before[1], `${reason} must not repaint the hidden schedule`);
+    assert.equal(widget.webContents.invalidations || 0, before[0], 'the unchanged owner does not need repainting');
+  }
+});
 
 test('Windows renderer crash drops its input region until explicit recovery and fresh bounds', async () => {
   const env = await desktop({ platform: 'win32' }); env.load();

@@ -241,6 +241,7 @@ function updateInputRegions() {
   }
   else syncNativeTopmost();
   const owner = capturedPanel || modal;
+  const repaint = [];
   for (const panel of panels) {
     const win = panelWindow(panel);
     if (!win || win.isDestroyed()) continue;
@@ -263,6 +264,12 @@ function updateInputRegions() {
     if (previous?.shape !== key) win.setShape(shape);
     if (previous?.enabled !== enabled) win.setIgnoreMouseEvents(!enabled, { forward: true });
     inputRegions.set(win, { shape: key, enabled });
+    if (previous?.enabled === false && enabled) repaint.push(win);
+  }
+  // Restoring mouse input removes WS_EX_LAYERED on Windows. Repaint after
+  // both surfaces have their final styles and regions, even if bounds match.
+  for (const win of repaint) {
+    if (windowsShown && isVisible(win)) win.webContents.invalidate();
   }
 }
 

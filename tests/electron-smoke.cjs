@@ -98,8 +98,11 @@ require(${JSON.stringify(path.join(appRoot, 'main.cjs'))});
         try {
           const kind = get(win.getNativeWindowHandle().readBigUInt64LE(), region);
           const scale = screen.getDisplayMatching(win.getBounds()).scaleFactor;
-          const covered = panel !== 'schedule' || !box || [8, box.width / 2, box.width - 8].every(x =>
-            [8, box.height / 2, box.height - 8].every(y => contains(region, Math.round((box.x + x) * scale), Math.round((box.y + y) * scale))));
+          const client = win.getContentBounds();
+          const covered = panel !== 'schedule' || !box || (
+            box.x >= 0 && box.y >= 0 && box.x + box.width <= client.width && box.y + box.height <= client.height &&
+            [8, box.width / 2, box.width - 8].every(x =>
+              [8, box.height / 2, box.height - 8].every(y => contains(region, Math.round((box.x + x) * scale), Math.round((box.y + y) * scale)))));
           return { panel, kind, covered: !!covered };
         } finally { release(region); }
       });
@@ -129,6 +132,77 @@ require(${JSON.stringify(path.join(appRoot, 'main.cjs'))});
     if (process.platform === 'win32') {
       await expect.poll(() => nativeRegions(dockedAfter).then(windows => windows.every(win => win.kind > 0 && win.covered))).toBe(true);
     }
+
+    // Start floating, then use the real drag/snap path before locking. Loading
+    // an already-docked layout skips the styles and pointer state at release.
+    await widget.evaluate(() => {
+      const key = 'minimal-task-widget-schedule-layout-v1';
+      const main = document.getElementById('widget').getBoundingClientRect();
+      const value = JSON.stringify({ floating: true, customSize: true, dockEdge: 'bottom',
+        left: Math.max(8, main.left - 504), top: Math.min(innerHeight - 408, main.top + 100), width: 372, height: 400 });
+      localStorage.setItem(key, value);
+      window.dispatchEvent(new StorageEvent('storage', { key, newValue: value }));
+    });
+    await expect(schedule.locator('#app-stack')).toHaveClass(/schedule-floating/);
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()
+      .find(win => win.webContents.getURL().includes('panel=schedule')).focus());
+    await schedule.locator('#schedule-lock-toggle').click();
+    await expect(schedule.locator('#schedule-lock-toggle')).toHaveAttribute('aria-pressed', 'false');
+    const floatingBefore = await schedule.locator('#schedule-card').boundingBox();
+    const snapMain = await widget.locator('#widget').boundingBox();
+    const snapTitle = await schedule.locator('.schedule-title').boundingBox();
+    const grab = { x: snapTitle.x + 20, y: snapTitle.y + snapTitle.height / 2 };
+    const nearLeft = { x: snapMain.x - floatingBefore.width - 12 + 20, y: snapMain.y + 20 };
+    await schedule.mouse.move(grab.x, grab.y);
+    await schedule.mouse.down();
+    await schedule.mouse.move(nearLeft.x + grab.x - floatingBefore.x, nearLeft.y + grab.y - floatingBefore.y, { steps: 15 });
+    await schedule.mouse.up();
+    await expect(schedule.locator('#app-stack')).toHaveClass(/schedule-side-docked/);
+    await expect(schedule.locator('#app-stack')).not.toHaveClass(/schedule-floating/);
+    await expect.poll(() => schedule.evaluate(() => {
+      const layout = JSON.parse(localStorage.getItem('minimal-task-widget-schedule-layout-v1'));
+      return { floating: layout.floating, dockEdge: layout.dockEdge };
+    })).toEqual({ floating: false, dockEdge: 'left' });
+    await expect.poll(async () => {
+      const main = await widget.locator('#widget').boundingBox();
+      const card = await schedule.locator('#schedule-card').boundingBox();
+      return Math.abs(card.x + card.width + 12 - main.x) + Math.abs(card.y - main.y);
+    }).toBeLessThan(2);
+    if (process.platform === 'win32') {
+      await expect.poll(async () => nativeRegions(await schedule.locator('#schedule-card').boundingBox())
+        .then(windows => windows.every(win => win.kind > 0 && win.covered))).toBe(true);
+    }
+    await schedule.locator('#schedule-lock-toggle').click();
+    await expect(schedule.locator('#schedule-lock-toggle')).toHaveAttribute('aria-pressed', 'true');
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()
+      .find(win => win.webContents.getURL().includes('panel=widget')).focus());
+    for (const delta of [{ x: 80, y: 20 }, { x: -80, y: -20 }]) {
+      const before = await widget.locator('#widget').boundingBox();
+      // Drag actual clock text: selecting it previously interrupted the second
+      // drag, which an assertion on only the first few pixels did not catch.
+      const clock = await widget.locator('#clock').boundingBox();
+      const start = { x: clock.x + 30, y: clock.y + clock.height / 2 };
+      await widget.mouse.move(start.x, start.y);
+      await widget.mouse.down();
+      await widget.mouse.move(start.x + delta.x, start.y + delta.y, { steps: 12 });
+      await widget.mouse.up();
+      await expect.poll(async () => {
+        const main = await widget.locator('#widget').boundingBox();
+        return Math.abs(main.x - before.x - delta.x) + Math.abs(main.y - before.y - delta.y);
+      }).toBeLessThan(2);
+      await expect.poll(async () => {
+        const main = await widget.locator('#widget').boundingBox();
+        const card = await schedule.locator('#schedule-card').boundingBox();
+        return Math.abs(card.x + card.width + 12 - main.x) + Math.abs(card.y - main.y);
+      }).toBeLessThan(2);
+      assert.equal(await widget.evaluate(() => getSelection().toString()), '', 'a header drag must not select clock text');
+      const leftAfter = await schedule.locator('#schedule-card').boundingBox();
+      assert.deepEqual({ width: leftAfter.width, height: leftAfter.height }, { width: 372, height: 400 });
+      if (process.platform === 'win32') {
+        await expect.poll(() => nativeRegions(leftAfter).then(windows => windows.every(win => win.kind > 0 && win.covered))).toBe(true);
+      }
+    }
+    console.log('Electron smoke stage passed: floating drag snapped left, locked, and followed both complete main-panel drags with matching native regions.');
 
     await schedule.locator('#schedule-edit').click();
     await schedule.locator('#course-name').fill('Electron smoke course');
@@ -186,6 +260,23 @@ require(${JSON.stringify(path.join(appRoot, 'main.cjs'))});
     await widget.evaluate(() => window.desktopBridge.setPin('widget', false));
     await schedule.evaluate(() => window.desktopBridge.setPin('schedule', false));
     if (process.platform === 'win32') {
+      const foregroundState = () => app.evaluate(({ BrowserWindow }) => {
+        const user32 = globalThis.taskboardTestRequire('koffi').load('user32.dll');
+        const foreground = user32.func('uintptr_t __stdcall GetForegroundWindow()')();
+        const desktop = globalThis.taskboardTestRequire('./windows-desktop.cjs');
+        const windows = BrowserWindow.getAllWindows();
+        const handles = windows.filter(win => win !== globalThis.taskboardTestForeground).map(win => win.getNativeWindowHandle());
+        return {
+          foreground: String(foreground),
+          context: desktop.foregroundContext(handles),
+          windows: windows.map(win => ({
+            panel: win === globalThis.taskboardTestForeground ? 'temporary' : new URL(win.webContents.getURL()).searchParams.get('panel'),
+            handle: String(win.getNativeWindowHandle().readBigUInt64LE()), visible: win.isVisible(),
+            focused: win.isFocused(), topmost: desktop.isTopmost(win.getNativeWindowHandle()),
+          })),
+        };
+      });
+      let lastForeground;
       // A separate ordinary window must cover both unpinned panels after the
       // desktop boost is removed. Native false alone does not prove the Z-order.
       await app.evaluate(async ({ BrowserWindow }) => {
@@ -194,6 +285,19 @@ require(${JSON.stringify(path.join(appRoot, 'main.cjs'))});
         await win.loadURL('data:text/html,<title>Taskboard smoke foreground app</title><p>Temporary foreground window</p>');
         win.show();
       });
+      console.log('Electron smoke stage: Taskboard smoke foreground app is ready; waiting for its native foreground activation.');
+      try {
+        await expect.poll(async () => {
+          lastForeground = await foregroundState();
+          return lastForeground.windows.some(win => win.panel === 'temporary' && win.handle === lastForeground.foreground);
+        }, { timeout: 15000, message: 'the temporary ordinary window must actually acquire native foreground before testing the handoff' }).toBe(true);
+      } catch (error) {
+        console.error('Temporary foreground acquisition state:', JSON.stringify({
+          foreground: lastForeground?.foreground,
+          windows: lastForeground?.windows.map(({ panel, handle }) => ({ panel, handle })),
+        }));
+        throw error;
+      }
       await expect.poll(() => app.evaluate(({ BrowserWindow }) => {
         const front = globalThis.taskboardTestForeground;
         const getPrevious = globalThis.taskboardTestRequire('koffi').load('user32.dll')
@@ -215,11 +319,15 @@ require(${JSON.stringify(path.join(appRoot, 'main.cjs'))});
       // Destroying it first lets Windows activate an unrelated application.
       await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()
         .find(win => win.webContents.getURL().includes('panel=schedule')).focus());
-      await expect.poll(() => app.evaluate(({ BrowserWindow }) => {
-        const handles = BrowserWindow.getAllWindows().filter(win => win !== globalThis.taskboardTestForeground)
-          .map(win => win.getNativeWindowHandle());
-        return globalThis.taskboardTestRequire('./windows-desktop.cjs').foregroundContext(handles);
-      })).toBe('panel');
+      try {
+        await expect.poll(async () => {
+          lastForeground = await foregroundState();
+          return lastForeground.context;
+        }, { message: 'native foreground must return to a Taskboard panel before removing the temporary window' }).toBe('panel');
+      } catch (error) {
+        console.error('Panel foreground handoff state:', JSON.stringify(lastForeground));
+        throw error;
+      }
       await app.evaluate(() => globalThis.taskboardTestForeground.destroy());
       // Exercise persistent native callbacks in Electron's actual message loop.
       await app.evaluate(({ BrowserWindow }) => {
