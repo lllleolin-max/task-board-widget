@@ -1,6 +1,6 @@
 {
   "name": "task-board-widget",
-  "version": "1.0.0",
+  "version": "1.1.3",
   "description": "A lightweight bilingual-ready task and schedule widget",
   "main": "main.cjs",
   "author": "lllleolin-max",
@@ -8,9 +8,17 @@
   "scripts": {
     "start": "electron .",
     "dist:win": "electron-builder --win nsis --x64 --publish never",
-    "dist:mac": "electron-builder --mac dmg --universal --publish never"
+    "pack:win": "electron-builder --win --x64 --dir --publish never",
+    "dist:mac": "electron-builder --mac dmg --universal --publish never",
+    "test": "node --test tests/*.test.cjs",
+    "test:browser": "playwright test",
+    "check": "node scripts/check.cjs",
+    "verify": "npm run check && npm test && npm run test:browser",
+    "test:electron": "node tests/electron-smoke.cjs",
+    "test:installer": "node tests/test-installer.cjs"
   },
   "devDependencies": {
+    "@playwright/test": "1.63.0",
     "electron": "^44.4.5",
     "electron-builder": "^26.15.3"
   },
@@ -22,9 +30,16 @@
       "index.html",
       "main.cjs",
       "preload.cjs",
-      "themes/**/*",
+      "windows-desktop.cjs",
+      "themes/*-bg.png",
+      "themes/anu-crest.svg",
+      "themes/ANU-crest-attribution.txt",
+      "build/icon.png",
       "LICENSE",
-      "README.md"
+      "README.md",
+      "!node_modules/koffi/{doc,lib,vendor}/**/*",
+      "!node_modules/koffi/src/**/*.{cc,hh,inc,def}",
+      "!node_modules/koffi/cnoke.cjs"
     ],
     "directories": {
       "buildResources": "build",
@@ -43,12 +58,26 @@
     },
     "nsis": {
       "oneClick": false,
+      "include": "build/installer.nsh",
+      "runAfterFinish": true,
+      "installerLanguages": [
+        "en_US",
+        "zh_CN",
+        "zh_TW",
+        "ja_JP",
+        "ko_KR"
+      ],
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true
     },
     "mac": {
       "icon": "build/icon.icns",
+      "files": [
+        "!windows-desktop.cjs",
+        "!node_modules/koffi{,/**/*}",
+        "!node_modules/@koromix{,/**/*}"
+      ],
       "category": "public.app-category.productivity",
       "target": [
         {
@@ -65,5 +94,8 @@
     "dmg": {
       "sign": false
     }
+  },
+  "dependencies": {
+    "koffi": "3.3.2"
   }
 }
