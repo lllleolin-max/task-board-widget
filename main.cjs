@@ -295,6 +295,10 @@ function createWindow(panel) {
   const win = new BrowserWindow({
     x, y, width, height,
     frame: false,
+    // Chromium otherwise treats our full-screen HWND as an opaque occluder,
+    // ignoring its simple card-shaped region, and stops the sibling's frames.
+    // Tool windows are excluded as occluders; ordinary apps still occlude us.
+    ...(nativeHitTesting ? { type: 'toolbar' } : {}),
     transparent: true,
     backgroundColor: '#00000000',
     hasShadow: false,

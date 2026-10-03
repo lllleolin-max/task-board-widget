@@ -52,6 +52,8 @@ Linux CI 安装浏览器及系统依赖：`npx playwright install --with-deps ch
 
 测试入口在加载产品代码前移除 Playwright 自动注入的三个关闭后台节流的开关，并断言开关不存在，使窗口遮挡与后台行为更接近正常启动。原生区域和 DOM 几何断言仍不能代替对最终屏幕像素的观察。
 
+Windows 两个面板以 `toolbar` 类型创建，原生回归在初始化、输入、Pin、显隐和重载等阶段读取 `GWL_EXSTYLE` 并断言保留 `WS_EX_TOOLWINDOW`。macOS/Linux 保持默认类型，背景节流保持默认。工具窗口不会被 Chromium 当作不透明遮挡者，普通应用对面板的遮挡策略仍生效。
+
 原生降层故障注入前核验 Windows 实际前景属于隔离面板，不能只依赖 Electron 缓存的 `isFocused()`。临时普通窗口先严格核验 `GetForegroundWindow` 与其句柄一致，关闭前再把前台交回测试面板。系统拒绝测试进程取得焦点时，可在 15 秒等待期间激活标题为 `Taskboard smoke foreground app` 的隔离窗口；不会放宽前景或层级断言。
 
 课表拖动回归执行解锁、拖动、释放、切回主体并点击设置的完整顺序；同时核验指针捕获释放，以及 Windows 两个窗口的 `WS_EX_TRANSPARENT` 标志均已清除，防止仅检查 DOM 点击而漏掉原生点击穿透。
@@ -65,6 +67,8 @@ Linux CI 安装浏览器及系统依赖：`npx playwright install --with-deps ch
 Windows 的 `setIgnoreMouseEvents` 会切换透明窗口样式，恢复启用后补一次 `webContents.invalidate()`；单元回归检查跟随面板恢复时重绘、连续位置报告不重复重绘，以及隐藏或崩溃面板不重绘。该补偿与屏幕边界修复分别验证，不将其视为已复现并排除了所有屏幕中间缺块。
 
 2026-10-03 将验证扩展为真实浮动拖拽吸附，而非只加载预设吸附状态。旧代码可将原本在屏幕内的 566 像素宽课表吸附到 left=-39，锁定后仍持续越界；现在拒绝无法完整容纳的吸附目标。另确认吸附动画中可见位置与区域上报存在约 20 像素差异，桌面版同时关闭 CSS 插值和 FLIP 位移动画。连续拖动也复现了标题文字被选中、后续原生 `dragstart` 导致 `pointercancel` 的独立问题，现通过标题栏禁止选字及阻止默认指针行为修复。上述明确复现的问题不能替代用户对屏幕中间持续缺块的最终验收。
+
+同日进一步在正常启动的 dev.5 安装版用真实鼠标复现：上方吸附的课表随主体右移 100、上移 20 像素后，屏幕画面仍停留在旧位置，被新位置区域切掉；而带调试连接的隔离窗口未复现同一现象。不能用后者的 DOM/区域通过代替普通启动验收。Chromium 152 的 [IsWindowVisibleAndFullyOpaque](https://github.com/chromium/chromium/blob/152.0.7977.130/ui/gfx/win/hwnd_util.cc#L117) 对简单矩形区域仍使用完整 HWND 矩形，但明确排除 `WS_EX_TOOLWINDOW`；[Electron 44.4.5](https://github.com/electron/electron/blob/v44.4.5/shell/browser/native_window_views.cc#L381) 的 `toolbar` 类型设置该标志。dev.6 采用这一窄范围修复，不添加全局禁用遮挡或后台节流的开关；最终像素与四方向交互仍需正常启动的实机验收。
 
 Windows 实机回归还检查真实系统事件的订阅与注销、普通应用覆盖未 Pin 面板的实际窗口顺序，以及注入原生降层后恢复临时置顶。测试分别检查逻辑 Pin 和原生层级：停留桌面时未 Pin 面板可以暂时带有置顶标志，切回普通应用后必须撤销；真实用户 Pin 保持独立置顶。
 

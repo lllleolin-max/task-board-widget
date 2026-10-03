@@ -43,12 +43,18 @@ require(${JSON.stringify(path.join(appRoot, 'main.cjs'))});
       const pins = await widget.evaluate(() => window.desktopBridge.getPins());
       const windows = await app.evaluate(({ BrowserWindow }) => {
         const desktop = process.platform === 'win32' ? globalThis.taskboardTestRequire('./windows-desktop.cjs') : null;
+        const getStyle = desktop ? globalThis.taskboardTestRequire('koffi').load('user32.dll')
+          .func('intptr_t __stdcall GetWindowLongPtrW(uintptr_t hwnd, int index)') : null;
         return BrowserWindow.getAllWindows().map((win) => ({
           panel: new URL(win.webContents.getURL()).searchParams.get('panel'), visible: win.isVisible(),
           topmost: desktop ? desktop.isTopmost(win.getNativeWindowHandle()) : win.isAlwaysOnTop(),
+          toolWindow: getStyle ? !!(Number(getStyle(win.getNativeWindowHandle().readBigUInt64LE(), -20)) & 0x80) : null,
         })).sort((a, b) => a.panel.localeCompare(b.panel));
       });
-      for (const win of windows) if (pins[win.panel]) assert.ok(win.topmost, 'a user-pinned window must really be topmost');
+      for (const win of windows) {
+        if (process.platform === 'win32') assert.ok(win.toolWindow, `${win.panel} must retain WS_EX_TOOLWINDOW so its full-screen HWND cannot falsely occlude the other panel`);
+        if (pins[win.panel]) assert.ok(win.topmost, 'a user-pinned window must really be topmost');
+      }
       return windows.map(({ panel, visible }) => ({ panel, visible, pinned: pins[panel] }));
     };
     await expect.poll(nativeWindows).toEqual([

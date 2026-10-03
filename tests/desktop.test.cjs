@@ -148,6 +148,17 @@ test('creates two sandboxed transparent panels, using polling on macOS only whil
   assert.deepEqual([...env.intervals.values()].map((timer) => timer.delay), [16]);
 });
 
+test('both Windows panels use toolbar windows while other platforms retain the default type', async () => {
+  for (const platform of ['win32', 'darwin', 'linux']) {
+    const { windows } = await desktop({ platform });
+    assert.equal(windows.length, 2);
+    for (const win of windows) {
+      assert.equal(win.options.type, platform === 'win32' ? 'toolbar' : undefined,
+        `${platform} ${win.panel} window type`);
+    }
+  }
+});
+
 test('routes normal, overlapping, modal and pinned regions, leaving the desktop clickable elsewhere', async () => {
   const env = await desktop(); env.load();
   const [widget, schedule] = env.windows;
