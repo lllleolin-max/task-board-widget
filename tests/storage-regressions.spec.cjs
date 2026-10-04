@@ -83,6 +83,42 @@ test('denied storage reads keep the UI usable without overwriting unread tasks',
   await expect(page.locator('.task-title')).toHaveText('读取失败时保留的任务');
 });
 
+test('schedule initialization survives a quota failure while advancing the saved day', async ({ page }) => {
+  await page.clock.setFixedTime(new Date('2026-09-29T04:00:00Z'));
+  const savedSettings = JSON.stringify({
+    periodMode: 'day', periodStart: '2026-09-28', periodEnd: '2026-09-28',
+    followSystemDate: true, courseEnabled: true,
+  });
+  await page.evaluate(({ key, value }) => localStorage.setItem(key, value), {
+    key: SETTINGS, value: savedSettings,
+  });
+  await page.addInitScript(key => {
+    const setItem = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (name, value) {
+      if (name === key) throw new DOMException('Local storage quota exhausted', 'QuotaExceededError');
+      return setItem.call(this, name, value);
+    };
+    window.desktopBridge = {
+      reportWidgetBounds() {},
+      reportScheduleBounds(bounds) { window.lastScheduleBounds = bounds; },
+      getPins: async () => ({ widget: false, schedule: false }),
+      setLocale() {},
+      onWidgetBounds() {},
+      getWidgetBounds: async () => null,
+    };
+  }, SETTINGS);
+  await page.goto(`${url}?panel=schedule`);
+
+  await expectFailureToast(page);
+  expect(await raw(page, SETTINGS)).toBe(savedSettings);
+  await expect(page.locator('.schedule-slot')).toHaveCount(210);
+  await expect.poll(() => page.evaluate(() => window.lastScheduleBounds?.visible)).toBe(true);
+  await expect.poll(() => page.evaluate(() => window.lastScheduleBounds?.extraRects.length)).toBe(1);
+  await page.locator('#schedule-edit').click();
+  await expect(page.locator('#schedule-scrim')).toHaveClass(/open/);
+  await expect(page.locator('#course-name')).toBeFocused();
+});
+
 test('task quota failure keeps the form and prior data; retry saves exactly one task', async ({ page }) => {
   const before = await raw(page, TASKS);
   await denyWrites(page, TASKS);
