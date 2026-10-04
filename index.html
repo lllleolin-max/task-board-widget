@@ -2728,37 +2728,11 @@
           attributeFilter: ["class", "style"],
         });
       }
-      const initial = [
-        {
-          id: crypto.randomUUID(),
-          type: "main",
-          title: "完成这周最重要的交付",
-          date: "",
-          done: false,
-          items: [],
-        },
-        {
-          id: crypto.randomUUID(),
-          type: "side",
-          title: "整理桌面和收件箱",
-          date: "",
-          done: false,
-          items: [],
-        },
-        {
-          id: crypto.randomUUID(),
-          type: "side",
-          title: "预约下周的体检",
-          date: "",
-          done: false,
-          items: [],
-        },
-      ];
       let tasks;
       try {
-        tasks = JSON.parse(localStorage.getItem(KEY)) || initial;
+        tasks = JSON.parse(localStorage.getItem(KEY)) || [];
       } catch {
-        tasks = initial;
+        tasks = [];
       }
       function normalizeTasks(value) {
         return (Array.isArray(value) ? value : [])
