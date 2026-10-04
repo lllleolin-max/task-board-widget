@@ -16,8 +16,6 @@ const test = base.extend({
     page.on('pageerror', error => errors.push(error.message));
     await page.clock.setFixedTime(new Date('2026-09-29T04:00:00Z'));
     await page.goto(url);
-    await page.evaluate(key => localStorage.setItem(key, '[]'), TASKS);
-    await page.reload();
     await use(page);
     expect(errors, 'No uncaught renderer errors during user interactions').toEqual([]);
   },
@@ -75,6 +73,9 @@ async function dragBy(page, locator, dx, dy, position = {}) {
 }
 
 test('task creation, completion counts and persistence', async ({ page }) => {
+  await expect(page.locator('.task')).toHaveCount(0);
+  await expect(page.locator('#main-count')).toHaveText('0 项待办');
+  await expect(page.locator('#side-count')).toHaveText('0 项待办');
   const main = await addTask(page, '提交实验报告');
   const side = await addTask(page, '预约讨论', 'side', '14:30');
   await expect(main.locator('.deadline')).toHaveText('今天');
