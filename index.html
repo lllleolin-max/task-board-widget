@@ -439,6 +439,19 @@
         border-width: 0 1.4px 1.4px 0;
         transform: rotate(45deg);
       }
+      .task-heading {
+        min-width: 0;
+        display: flex;
+        align-items: baseline;
+        flex-wrap: wrap;
+        gap: 3px 7px;
+      }
+      .carryover-label {
+        color: var(--red);
+        font-size: 10px;
+        line-height: 1.45;
+        white-space: nowrap;
+      }
       .task-title {
         font-size: 12px;
         line-height: 1.45;
@@ -465,6 +478,7 @@
         color: #c1c1ba;
       }
       .expand {
+        grid-column: 4;
         border: 0;
         background: none;
         color: #b3b3aa;
@@ -2850,6 +2864,7 @@
             ...t,
             id: typeof t.id === "string" ? t.id : crypto.randomUUID(),
             pinned: t.pinned === true,
+            completedOn: t.done && validDate(t.completedOn) ? t.completedOn : "",
             date: validDate(t.date) ? t.date : "",
             dateStart: validDate(t.dateStart) ? t.dateStart : "",
             dateEnd: validDate(t.dateEnd) ? t.dateEnd : "",
@@ -3916,10 +3931,12 @@
         clean(parsed.body);
         return parsed.body.innerHTML;
       }
-      function matchesPeriod(task) {
+      function matchesPeriod(task, today = currentZoneDay()) {
+        if (carriedFrom(task, today)) return true;
         if (task.type === "main") {
           const start = task.date || task.dateStart || task.period?.start || "",
-            end = task.dateEnd || task.period?.end || start;
+            end = settings.periodMode === "day"
+              ? carryoverDueDate(task) : task.dateEnd || task.period?.end || start;
           if (start && end)
             return start <= settings.periodEnd && end >= settings.periodStart;
           if (settings.periodMode === "day") return false;
@@ -3931,6 +3948,35 @@
           task.period.end === settings.periodEnd
         );
       }
+      function carryoverDueDate(task) {
+        if (task.type === "main") {
+          const start = task.date || task.dateStart || task.period?.start || "",
+            end = task.dateEnd || task.date || task.dateStart || task.period?.end || "";
+          return validDate(start) && validDate(end) && end >= start ? end : "";
+        }
+        const period = task.period;
+        return period?.mode === "day" && period.start === period.end
+          ? period.end : "";
+      }
+      function carriedFrom(task, today = currentZoneDay()) {
+        if (settings.periodMode !== "day") return "";
+        const due = carryoverDueDate(task), day = settings.periodStart;
+        // Derive each day's view from the original record, without making copies
+        // or writing tasks at midnight. Future dates are not carried into early.
+        return due && due < day && day <= today &&
+          (!task.done || (task.completedOn && day <= task.completedOn))
+          ? due : "";
+      }
+      function carryoverLabel(date) {
+        const label = dateFormatter(localeNames[uiLocale], {
+          month: "long", day: "numeric", timeZone: "UTC",
+          ...(date.slice(0, 4) !== settings.periodStart.slice(0, 4) ? { year: "numeric" } : {}),
+        }).format(new Date(date + "T12:00:00Z"));
+        return uiLocale === "en" ? `Unfinished from ${label}`
+          : uiLocale === "ja" ? `${label} 未完了`
+          : uiLocale === "ko" ? `${label} 미완료`
+          : `${label}未完成`;
+      }
       function updatePeriodLabel() {
         const mode =
           { day: "日待办", week: "周待办", month: "月待办", custom: "自定义" }[
@@ -3939,8 +3985,9 @@
         setLocalizedText($("period-open"), `${mode}⌄`);
       }
       function renderGroup(type) {
-        const list = tasks
-            .filter((t) => t.type === type && matchesPeriod(t))
+        const today = currentZoneDay(),
+          list = tasks
+            .filter((t) => t.type === type && matchesPeriod(t, today))
             .sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned)),
           host = $(type === "main" ? "main-tasks" : "side-tasks");
         $(type === "main" ? "main-count" : "side-count").textContent =
@@ -3969,14 +4016,19 @@
             updateTask(task.id, (current) => ({
               ...current,
               done: !current.done,
+              completedOn: current.done ? "" : currentZoneDay(),
             }));
           };
-          const title = addText(row, "div", "task-title", task.title);
+          const heading = addText(row, "div", "task-heading");
+          const title = addText(heading, "div", "task-title", task.title);
           title.onclick = () => row.classList.toggle("open");
           title.title = "展开 / 收起说明";
+          const carried = carriedFrom(task, today);
+          if (carried && !task.done)
+            addText(heading, "span", "carryover-label", carryoverLabel(carried));
           if (type === "side" && task.time)
             addText(row, "span", "deadline", task.time);
-          else if (task.date) {
+          else if (task.date && (!carried || task.done)) {
             const end = task.dateEnd || task.date;
             if (end > task.date) {
               const shortDate = (value) => {
