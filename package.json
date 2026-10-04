@@ -1,6 +1,6 @@
 {
   "name": "task-board-widget",
-  "version": "1.1.4",
+  "version": "1.1.5-dev.1",
   "description": "A lightweight bilingual-ready task and schedule widget",
   "main": "main.cjs",
   "author": "lllleolin-max",
@@ -38,7 +38,8 @@
       "LICENSE",
       "README.md",
       "!node_modules/koffi/{doc,lib,vendor}/**/*",
-      "!node_modules/koffi/src/**/*.{cc,hh,inc,def}",
+      "!node_modules/koffi/src/**/*.{cc,hh,inc,def,S,asm}",
+      "!node_modules/koffi/src/**/CMakeLists.txt",
       "!node_modules/koffi/cnoke.cjs"
     ],
     "directories": {

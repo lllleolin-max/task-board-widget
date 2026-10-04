@@ -2660,7 +2660,21 @@
         const { left, top, width, height } = el.getBoundingClientRect();
         return [{ left, top, width, height }];
       }
+      let storageReadFailed = false;
+      function readStorage(key) {
+        try {
+          return localStorage.getItem(key);
+        } catch {
+          storageReadFailed = true;
+          return null;
+        }
+      }
       function writeStorage(key, value) {
+        // An empty fallback must never overwrite data we could not read.
+        if (storageReadFailed) {
+          toast("本地数据读取失败，请重新打开后重试");
+          return false;
+        }
         try {
           localStorage.setItem(key, value);
           return true;
@@ -2730,7 +2744,7 @@
       }
       let tasks;
       try {
-        tasks = JSON.parse(localStorage.getItem(KEY)) || [];
+        tasks = JSON.parse(readStorage(KEY)) || [];
       } catch {
         tasks = [];
       }
@@ -2820,7 +2834,7 @@
       try {
         settings = {
           ...settings,
-          ...JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}"),
+          ...JSON.parse(readStorage(SETTINGS_KEY) || "{}"),
         };
       } catch {}
       settings = normalizeSettings(settings);
@@ -2839,6 +2853,12 @@
         "zh-TW": "主線 / 支線",
       };
       const lexicon = {
+        "本地数据读取失败，请重新打开后重试": [
+          "Could not read local data. Reopen the app and retry.",
+          "ローカルデータを読み込めません。再度開いてお試しください。",
+          "로컬 데이터를 읽을 수 없습니다. 앱을 다시 열어 재시도하세요.",
+          "本機資料讀取失敗，請重新開啟後再試",
+        ],
         "本地保存失败，请释放存储空间后重试": [
           "Could not save locally. Free some storage and retry.",
           "保存できません。空き容量を増やして再試行してください。",
@@ -3592,9 +3612,8 @@
             : Date.now(),
         );
       }
-      function currentZoneDay() {
-        const now = currentTime(),
-          parts = dateFormatter("en-CA", {
+      function currentZoneDay(now = currentTime()) {
+        const parts = dateFormatter("en-CA", {
             timeZone: settings.timezone,
             year: "numeric",
             month: "2-digit",
@@ -3607,28 +3626,25 @@
         const element = $(id);
         if (element.textContent !== value) element.textContent = value;
       }
+      let lastClockDay = "";
       function updateClock() {
         const now = currentTime(),
-          opts = { timeZone: settings.timezone };
+          opts = { timeZone: settings.timezone },
+          today = currentZoneDay(now);
+        let refreshTasks = !!lastClockDay && lastClockDay !== today;
+        lastClockDay = today;
         if (
           settings.periodMode === "day" &&
           settings.followSystemDate !== false
         ) {
-          const parts = dateFormatter("en-CA", {
-              ...opts,
-              year: "numeric",
-              month: "2-digit",
-              day: "2-digit",
-            }).formatToParts(now),
-            part = (k) => parts.find((p) => p.type === k).value,
-            today = `${part("year")}-${part("month")}-${part("day")}`;
           if (settings.periodStart !== today || settings.periodEnd !== today) {
             settings.periodStart = today;
             settings.periodEnd = today;
             writeStorage(SETTINGS_KEY, JSON.stringify(settings));
-            if (typeof render === "function") render();
+            refreshTasks = true;
           }
         }
+        if (refreshTasks) render();
         const selectedDay =
             settings.periodMode === "day" && settings.periodStart,
           displayDate = selectedDay
@@ -3735,6 +3751,10 @@
         parent.append(el);
         return el;
       }
+      function isEmbeddedImage(src) {
+        return typeof src === "string" &&
+          /^data:image\/(png|jpe?g|gif|webp|bmp);base64,[a-z0-9+/=\s]+$/i.test(src);
+      }
       function sanitizeDraft(html) {
         const parsed = new DOMParser().parseFromString(
           String(html),
@@ -3785,11 +3805,7 @@
             for (const attribute of [...child.attributes])
               child.removeAttribute(attribute.name);
             if (child.tagName === "IMG") {
-              if (
-                !/^data:image\/(png|jpe?g|gif|webp|bmp);base64,[a-z0-9+/=\s]+$/i.test(
-                  src || "",
-                )
-              ) {
+              if (!isEmbeddedImage(src)) {
                 child.remove();
                 continue;
               }
@@ -3915,7 +3931,7 @@
             content.onclick = noteCheck.onclick;
             if (item.html) content.innerHTML = sanitizeDraft(item.html);
             else content.textContent = item.text || "";
-            if (item.image && !item.html) {
+            if (isEmbeddedImage(item.image) && !item.html) {
               const img = document.createElement("img");
               img.src = item.image;
               img.alt = "草稿图片";
@@ -4146,7 +4162,7 @@
         widget.style.setProperty("--fit-scale", fit.toFixed(3));
       });
       fitObserver.observe(widget);
-      if (localStorage.getItem(UI_KEY) === "1")
+      if (readStorage(UI_KEY) === "1")
         widget.classList.add("collapsed");
       function syncCollapse() {
         const collapsed = widget.classList.contains("collapsed");
@@ -4183,7 +4199,7 @@
         if (typeof syncScheduleFreeState === "function")
           syncScheduleFreeState();
       }
-      setLocked(localStorage.getItem(LOCK_KEY) === "1", false);
+      setLocked(readStorage(LOCK_KEY) === "1", false);
       lockButton.onclick = () =>
         setLocked(!widget.classList.contains("locked"));
       let widgetDrag = null,
@@ -4271,7 +4287,7 @@
         .querySelectorAll(".resize-handle")
         .forEach((handle) => {
           handle.addEventListener("pointerdown", (e) => {
-            if (widget.classList.contains("locked")) return;
+            if (e.button !== 0 || widget.classList.contains("locked")) return;
             e.preventDefault();
             const r = widget.getBoundingClientRect();
             resizeState = {
@@ -4321,6 +4337,9 @@
             widget.style.top = top + "px";
             widget.style.width = width + "px";
             widget.style.height = height + "px";
+            const position = clampWidgetPosition(left, top);
+            widget.style.left = position.left + "px";
+            widget.style.top = position.top + "px";
             syncDockedScheduleToWidget();
             reportWidgetBounds();
           });
@@ -4443,8 +4462,8 @@
       const editor = $("draft-editor"),
         draftWindow = $("draft-window");
       try {
-        editor.innerHTML = sanitizeDraft(localStorage.getItem(DRAFT_KEY) || "");
-        $("draft-title").value = localStorage.getItem(DRAFT_TITLE_KEY) || "";
+        editor.innerHTML = sanitizeDraft(readStorage(DRAFT_KEY) || "");
+        $("draft-title").value = readStorage(DRAFT_TITLE_KEY) || "";
       } catch {}
       $("draft-title").addEventListener("input", () =>
         writeStorage(DRAFT_TITLE_KEY, $("draft-title").value),
@@ -4771,6 +4790,10 @@
         return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
       }
       function updatePeriodRange(value) {
+        if (!validDate(value)) {
+          periodDraft.start = periodDraft.end = "";
+          return;
+        }
         const d = new Date(value + "T00:00:00");
         if (periodDraft.mode === "day") {
           periodDraft.start = value;
@@ -4883,14 +4906,14 @@
           periodDraft.start = inputs[0].value;
           periodDraft.end = inputs[1].value;
           if (
-            !periodDraft.start ||
-            !periodDraft.end ||
+            !validDate(periodDraft.start) ||
+            !validDate(periodDraft.end) ||
             periodDraft.end < periodDraft.start
           ) {
             toast("请检查自定义周期");
             return;
           }
-        } else if (!periodDraft.start || !periodDraft.end) {
+        } else if (!validDate(periodDraft.start) || !validDate(periodDraft.end)) {
           toast("请选择日期");
           return;
         }
@@ -4934,7 +4957,7 @@
         );
       }
       try {
-        courses = JSON.parse(localStorage.getItem(SCHEDULE_KEY) || "[]");
+        courses = JSON.parse(readStorage(SCHEDULE_KEY) || "[]");
         courses = normalizeCourses(courses);
       } catch {
         courses = [];
@@ -5171,7 +5194,7 @@
         scheduleResizeHandles = [
           ...scheduleCard.querySelectorAll("[data-schedule-resize]"),
         ];
-      let scheduleLocked = localStorage.getItem(SCHEDULE_LOCK_KEY) !== "0";
+      let scheduleLocked = readStorage(SCHEDULE_LOCK_KEY) !== "0";
       let scheduleLayout = {
         floating: false,
         left: 28,
@@ -5182,7 +5205,7 @@
       try {
         scheduleLayout = {
           ...scheduleLayout,
-          ...JSON.parse(localStorage.getItem(SCHEDULE_LAYOUT_KEY) || "{}"),
+          ...JSON.parse(readStorage(SCHEDULE_LAYOUT_KEY) || "{}"),
         };
       } catch {}
       function persistScheduleLayout() {
@@ -5378,7 +5401,7 @@
         reportScheduleBounds();
       }
       let scheduleCollapsed =
-        localStorage.getItem("minimal-task-widget-schedule-collapsed-v1") ===
+        readStorage("minimal-task-widget-schedule-collapsed-v1") ===
         "1";
       $("schedule-collapse").onclick = () => {
         scheduleCollapsed = !scheduleCollapsed;
@@ -6014,6 +6037,7 @@
       applyLanguage();
       reportWidgetBounds();
       reportScheduleBounds();
+      if (storageReadFailed) toast("本地数据读取失败，请重新打开后重试");
     </script>
   </body>
 </html>

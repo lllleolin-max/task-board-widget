@@ -3,8 +3,6 @@ const koffi = require('koffi');
 const user32 = koffi.load('user32.dll');
 const foregroundWindow = user32.func('uintptr_t __stdcall GetForegroundWindow()');
 const desktopWindow = user32.func('uintptr_t __stdcall GetDesktopWindow()');
-const previousWindow = user32.func('uintptr_t __stdcall GetWindow(uintptr_t hwnd, unsigned int command)');
-const isVisible = user32.func('int __stdcall IsWindowVisible(uintptr_t hwnd)');
 const windowStyle = user32.func('intptr_t __stdcall GetWindowLongPtrW(uintptr_t hwnd, int index)');
 const setWindowPos = user32.func('int __stdcall SetWindowPos(uintptr_t hwnd, intptr_t after, int x, int y, int width, int height, unsigned int flags)');
 const className = user32.func('int __stdcall GetClassNameW(uintptr_t hwnd, _Out_ void * name, int count)');
@@ -18,21 +16,6 @@ function isDesktopWindow(hwnd) {
   const length = className(hwnd, buffer, 256);
   const name = buffer.toString('utf16le', 0, length * 2);
   return name === 'Progman' || name === 'WorkerW';
-}
-
-function isDesktopAbove(nativeHandle) {
-  let hwnd = handleValue(nativeHandle);
-  // GW_HWNDPREV walks toward the top of the Z-order. A desktop session can
-  // contain hundreds of hidden helper windows; detect cycles instead of
-  // cutting off a valid chain after an arbitrary number of handles.
-  const visited = new Set();
-  while (!visited.has(String(hwnd))) {
-    visited.add(String(hwnd));
-    hwnd = previousWindow(hwnd, 3);
-    if (!hwnd) return false;
-    if (isVisible(hwnd) && isDesktopWindow(hwnd)) return true;
-  }
-  return false;
 }
 
 function handleValue(handle) {
@@ -107,4 +90,4 @@ function watchChanges(listener) {
   return stop;
 }
 
-module.exports = { isDesktopForeground: () => isDesktopWindow(foregroundWindow()), isDesktopAbove, foregroundContext, isTopmost, ensureTopmost, placeBelowForeground, watchChanges };
+module.exports = { foregroundContext, isTopmost, ensureTopmost, placeBelowForeground, watchChanges };

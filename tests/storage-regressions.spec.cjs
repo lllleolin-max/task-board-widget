@@ -54,6 +54,35 @@ async function enableCourses(page) {
   await expect(page.locator('#schedule-card')).toBeVisible();
 }
 
+test('denied storage reads keep the UI usable without overwriting unread tasks', async ({ page }) => {
+  const savedTasks = JSON.stringify([{ id: 'saved', type: 'side', title: '读取失败时保留的任务', items: [] }]);
+  await page.evaluate(({ key, value }) => localStorage.setItem(key, value), { key: TASKS, value: savedTasks });
+  await page.addInitScript(() => {
+    if (window.name === 'storage-restored') return;
+    const getItem = Storage.prototype.getItem;
+    Storage.prototype.getItem = function () { throw new DOMException('Storage access denied', 'SecurityError'); };
+    window.restoreStorageReads = () => {
+      Storage.prototype.getItem = getItem;
+      window.name = 'storage-restored';
+    };
+  });
+  await page.reload();
+  await expect(page.locator('.schedule-slot')).toHaveCount(210);
+  await page.locator('[data-add="side"]').click();
+  await page.locator('#task-input').fill('不能覆盖旧任务');
+  await page.locator('#form button[type="submit"]').click();
+  await expect(page.locator('#scrim')).toHaveClass(/open/);
+  await expect(page.locator('#task-input')).toHaveValue('不能覆盖旧任务');
+  await expect(page.locator('#toast')).toContainText('读取失败');
+  await page.evaluate(() => window.restoreStorageReads());
+  expect(await raw(page, TASKS)).toBe(savedTasks);
+  // Read access alone does not make the in-memory empty list authoritative.
+  await page.locator('#form button[type="submit"]').click();
+  expect(await raw(page, TASKS)).toBe(savedTasks);
+  await page.reload();
+  await expect(page.locator('.task-title')).toHaveText('读取失败时保留的任务');
+});
+
 test('task quota failure keeps the form and prior data; retry saves exactly one task', async ({ page }) => {
   const before = await raw(page, TASKS);
   await denyWrites(page, TASKS);
