@@ -58,6 +58,7 @@
       ]
     },
     "nsis": {
+      "deleteAppDataOnUninstall": false,
       "oneClick": false,
       "include": "build/installer.nsh",
       "runAfterFinish": true,

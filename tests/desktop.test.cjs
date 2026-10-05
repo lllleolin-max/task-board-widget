@@ -139,6 +139,8 @@ test('creates two sandboxed transparent panels, using polling on macOS only whil
     assert.equal(win.options.webPreferences.contextIsolation, true);
     assert.equal(win.options.webPreferences.nodeIntegration, false);
     assert.equal(win.options.webPreferences.sandbox, true);
+    assert.equal(win.options.webPreferences.partition, undefined, 'Keep the existing default persistent storage partition');
+    assert.equal(win.options.webPreferences.session, undefined, 'Do not replace the session holding saved tasks and courses');
     assert.equal(win.ignoreMouse, true);
   }
   env.load();
