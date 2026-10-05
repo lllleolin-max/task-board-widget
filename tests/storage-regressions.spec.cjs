@@ -54,6 +54,71 @@ async function enableCourses(page) {
   await expect(page.locator('#schedule-card')).toBeVisible();
 }
 
+test('denied storage reads keep the UI usable without overwriting unread tasks', async ({ page }) => {
+  const savedTasks = JSON.stringify([{ id: 'saved', type: 'side', title: '读取失败时保留的任务', items: [] }]);
+  await page.evaluate(({ key, value }) => localStorage.setItem(key, value), { key: TASKS, value: savedTasks });
+  await page.addInitScript(() => {
+    if (window.name === 'storage-restored') return;
+    const getItem = Storage.prototype.getItem;
+    Storage.prototype.getItem = function () { throw new DOMException('Storage access denied', 'SecurityError'); };
+    window.restoreStorageReads = () => {
+      Storage.prototype.getItem = getItem;
+      window.name = 'storage-restored';
+    };
+  });
+  await page.reload();
+  await expect(page.locator('.schedule-slot')).toHaveCount(210);
+  await page.locator('[data-add="side"]').click();
+  await page.locator('#task-input').fill('不能覆盖旧任务');
+  await page.locator('#form button[type="submit"]').click();
+  await expect(page.locator('#scrim')).toHaveClass(/open/);
+  await expect(page.locator('#task-input')).toHaveValue('不能覆盖旧任务');
+  await expect(page.locator('#toast')).toContainText('读取失败');
+  await page.evaluate(() => window.restoreStorageReads());
+  expect(await raw(page, TASKS)).toBe(savedTasks);
+  // Read access alone does not make the in-memory empty list authoritative.
+  await page.locator('#form button[type="submit"]').click();
+  expect(await raw(page, TASKS)).toBe(savedTasks);
+  await page.reload();
+  await expect(page.locator('.task-title')).toHaveText('读取失败时保留的任务');
+});
+
+test('schedule initialization survives a quota failure while advancing the saved day', async ({ page }) => {
+  await page.clock.setFixedTime(new Date('2026-09-29T04:00:00Z'));
+  const savedSettings = JSON.stringify({
+    periodMode: 'day', periodStart: '2026-09-28', periodEnd: '2026-09-28',
+    followSystemDate: true, courseEnabled: true,
+  });
+  await page.evaluate(({ key, value }) => localStorage.setItem(key, value), {
+    key: SETTINGS, value: savedSettings,
+  });
+  await page.addInitScript(key => {
+    const setItem = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (name, value) {
+      if (name === key) throw new DOMException('Local storage quota exhausted', 'QuotaExceededError');
+      return setItem.call(this, name, value);
+    };
+    window.desktopBridge = {
+      reportWidgetBounds() {},
+      reportScheduleBounds(bounds) { window.lastScheduleBounds = bounds; },
+      getPins: async () => ({ widget: false, schedule: false }),
+      setLocale() {},
+      onWidgetBounds() {},
+      getWidgetBounds: async () => null,
+    };
+  }, SETTINGS);
+  await page.goto(`${url}?panel=schedule`);
+
+  await expectFailureToast(page);
+  expect(await raw(page, SETTINGS)).toBe(savedSettings);
+  await expect(page.locator('.schedule-slot')).toHaveCount(210);
+  await expect.poll(() => page.evaluate(() => window.lastScheduleBounds?.visible)).toBe(true);
+  await expect.poll(() => page.evaluate(() => window.lastScheduleBounds?.extraRects.length)).toBe(1);
+  await page.locator('#schedule-edit').click();
+  await expect(page.locator('#schedule-scrim')).toHaveClass(/open/);
+  await expect(page.locator('#course-name')).toBeFocused();
+});
+
 test('task quota failure keeps the form and prior data; retry saves exactly one task', async ({ page }) => {
   const before = await raw(page, TASKS);
   await denyWrites(page, TASKS);

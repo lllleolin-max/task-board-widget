@@ -439,6 +439,19 @@
         border-width: 0 1.4px 1.4px 0;
         transform: rotate(45deg);
       }
+      .task-heading {
+        min-width: 0;
+        display: flex;
+        align-items: baseline;
+        flex-wrap: wrap;
+        gap: 3px 7px;
+      }
+      .carryover-label {
+        color: var(--red);
+        font-size: 10px;
+        line-height: 1.45;
+        white-space: nowrap;
+      }
       .task-title {
         font-size: 12px;
         line-height: 1.45;
@@ -465,6 +478,7 @@
         color: #c1c1ba;
       }
       .expand {
+        grid-column: 4;
         border: 0;
         background: none;
         color: #b3b3aa;
@@ -949,6 +963,51 @@
         color: var(--green);
         padding: 4px 0;
       }
+      .task.pinned .task-title::before {
+        content: "";
+        display: inline-block;
+        width: 12px;
+        height: 12px;
+        margin-right: 5px;
+        vertical-align: -1px;
+        background: var(--green);
+        mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' d='M16 9V3H8v6l-3 3v3h14v-3zM12 15v7'/%3E%3C/svg%3E") center / contain no-repeat;
+      }
+      .task-menu {
+        position: fixed;
+        z-index: 35;
+        min-width: 156px;
+        max-width: calc(100vw - 16px);
+        padding: 5px;
+        background: var(--paper);
+        color: var(--ink);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        box-shadow: 0 6px 24px rgba(36, 37, 31, 0.16);
+      }
+      .task-menu[hidden] { display: none; }
+      .task-menu button {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        width: 100%;
+        padding: 9px 10px;
+        border: 0;
+        border-radius: 6px;
+        background: transparent;
+        color: inherit;
+        font: inherit;
+        font-size: 12px;
+        text-align: left;
+        cursor: pointer;
+      }
+      .task-menu button:hover,
+      .task-menu button:focus-visible {
+        background: rgba(128, 128, 116, 0.12);
+        outline: none;
+      }
+      .task-menu button[data-task-action="delete"] { color: var(--red); }
+      .task-menu svg { width: 15px; height: 15px; flex: none; }
       .toast {
         position: fixed;
         bottom: 18px;
@@ -960,6 +1019,9 @@
         padding: 8px 13px;
         border-radius: 7px;
         font-size: 11px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
         transition: 0.18s;
         pointer-events: none;
         z-index: 30;
@@ -967,6 +1029,17 @@
       .toast.show {
         opacity: 1;
         transform: translateX(-50%) translateY(0);
+      }
+      .toast.show:has(#task-undo) { pointer-events: auto; }
+      #task-undo {
+        padding: 5px 8px;
+        border: 1px solid rgba(255, 255, 255, 0.45);
+        border-radius: 4px;
+        background: transparent;
+        color: inherit;
+        font: inherit;
+        white-space: nowrap;
+        cursor: pointer;
       }
       html[data-desktop-panel] .toast {
         width: max-content;
@@ -2595,7 +2668,17 @@
       </div>
       <div class="draft-hint">自动保存 · 可复制粘贴图片 · 拖动标题栏移动</div>
     </div>
-    <div class="toast" id="toast"></div>
+    <div class="task-menu" id="task-menu" role="menu" aria-label="任务操作" hidden>
+      <button type="button" role="menuitem" data-task-action="pin" tabindex="-1">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 9V3H8v6l-3 3v3h14v-3zM12 15v7"/></svg>
+        <span>置顶任务</span>
+      </button>
+      <button type="button" role="menuitem" data-task-action="delete" tabindex="-1">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/></svg>
+        <span>删除任务</span>
+      </button>
+    </div>
+    <div class="toast" id="toast" role="status"></div>
     <script>
       const KEY = "minimal-task-widget-v1",
         DRAFT_KEY = "minimal-task-widget-draft-html-v1",
@@ -2627,10 +2710,20 @@
         documentListeners.push({ type, handler, options });
         document.addEventListener(type, handler, options);
       }
-      let toastTimer;
-      function toast(message) {
+      let toastTimer, pendingTaskUndo = null;
+      function toast(message, undo) {
         const el = $("toast");
+        if (undo) pendingTaskUndo = { undo, expiresAt: Date.now() + 10000 };
+        if (pendingTaskUndo?.expiresAt <= Date.now()) pendingTaskUndo = null;
         el.textContent = tr(message);
+        if (pendingTaskUndo) {
+          const button = activeDocument().createElement("button");
+          button.id = "task-undo";
+          button.type = "button";
+          button.textContent = tr("撤销删除");
+          button.onclick = pendingTaskUndo.undo;
+          el.append(button);
+        }
         if (window.desktopBridge) {
           const rect = $(
             desktopPanel === "schedule" ? "schedule-card" : "widget",
@@ -2652,7 +2745,18 @@
         }
         el.classList.add("show");
         clearTimeout(toastTimer);
-        toastTimer = setTimeout(() => el.classList.remove("show"), 1800);
+        toastTimer = setTimeout(() => {
+          el.classList.remove("show");
+          pendingTaskUndo = null;
+          if ($("task-undo")) $("task-undo").disabled = true;
+          reportWidgetBounds();
+          reportScheduleBounds();
+        }, pendingTaskUndo ? Math.max(0, pendingTaskUndo.expiresAt - Date.now()) : 1800);
+        // Startup storage errors can toast before the schedule bindings exist.
+        requestAnimationFrame(() => {
+          reportWidgetBounds();
+          reportScheduleBounds();
+        });
       }
       function toastRects() {
         const el = $("toast");
@@ -2660,7 +2764,21 @@
         const { left, top, width, height } = el.getBoundingClientRect();
         return [{ left, top, width, height }];
       }
+      let storageReadFailed = false;
+      function readStorage(key) {
+        try {
+          return localStorage.getItem(key);
+        } catch {
+          storageReadFailed = true;
+          return null;
+        }
+      }
       function writeStorage(key, value) {
+        // An empty fallback must never overwrite data we could not read.
+        if (storageReadFailed) {
+          toast("本地数据读取失败，请重新打开后重试");
+          return false;
+        }
         try {
           localStorage.setItem(key, value);
           return true;
@@ -2700,7 +2818,7 @@
             width: r.width,
             height: r.height,
             visible: true,
-            modal: !!document.querySelector(".scrim.open"),
+            modal: !!document.querySelector(".scrim.open") || !$("task-menu").hidden,
             extraRects: [
               ...(draftRect
                 ? [
@@ -2730,7 +2848,7 @@
       }
       let tasks;
       try {
-        tasks = JSON.parse(localStorage.getItem(KEY)) || [];
+        tasks = JSON.parse(readStorage(KEY)) || [];
       } catch {
         tasks = [];
       }
@@ -2745,6 +2863,8 @@
           .map((t) => ({
             ...t,
             id: typeof t.id === "string" ? t.id : crypto.randomUUID(),
+            pinned: t.pinned === true,
+            completedOn: t.done && validDate(t.completedOn) ? t.completedOn : "",
             date: validDate(t.date) ? t.date : "",
             dateStart: validDate(t.dateStart) ? t.dateStart : "",
             dateEnd: validDate(t.dateEnd) ? t.dateEnd : "",
@@ -2820,7 +2940,7 @@
       try {
         settings = {
           ...settings,
-          ...JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}"),
+          ...JSON.parse(readStorage(SETTINGS_KEY) || "{}"),
         };
       } catch {}
       settings = normalizeSettings(settings);
@@ -2839,6 +2959,20 @@
         "zh-TW": "主線 / 支線",
       };
       const lexicon = {
+        任务操作: ["Task actions", "タスク操作", "작업 메뉴", "任務操作"],
+        置顶任务: ["Pin task", "タスクを固定", "작업 고정", "置頂任務"],
+        取消置顶任务: ["Unpin task", "タスクの固定を解除", "작업 고정 해제", "取消置頂任務"],
+        删除任务: ["Delete task", "タスクを削除", "작업 삭제", "刪除任務"],
+        任务已删除: ["Task deleted", "タスクを削除しました", "작업을 삭제했습니다", "任務已刪除"],
+        撤销删除: ["Undo delete", "削除を元に戻す", "삭제 취소", "復原刪除"],
+        已撤销删除: ["Task restored", "タスクを復元しました", "작업을 복원했습니다", "已復原任務"],
+        "撤销失败，请重试": ["Could not restore. Please retry.", "復元できません。再試行してください。", "복원하지 못했습니다. 다시 시도하세요.", "復原失敗，請重試"],
+        "本地数据读取失败，请重新打开后重试": [
+          "Could not read local data. Reopen the app and retry.",
+          "ローカルデータを読み込めません。再度開いてお試しください。",
+          "로컬 데이터를 읽을 수 없습니다. 앱을 다시 열어 재시도하세요.",
+          "本機資料讀取失敗，請重新開啟後再試",
+        ],
         "本地保存失败，请释放存储空间后重试": [
           "Could not save locally. Free some storage and retry.",
           "保存できません。空き容量を増やして再試行してください。",
@@ -3592,9 +3726,8 @@
             : Date.now(),
         );
       }
-      function currentZoneDay() {
-        const now = currentTime(),
-          parts = dateFormatter("en-CA", {
+      function currentZoneDay(now = currentTime()) {
+        const parts = dateFormatter("en-CA", {
             timeZone: settings.timezone,
             year: "numeric",
             month: "2-digit",
@@ -3607,28 +3740,25 @@
         const element = $(id);
         if (element.textContent !== value) element.textContent = value;
       }
+      let lastClockDay = "";
       function updateClock() {
         const now = currentTime(),
-          opts = { timeZone: settings.timezone };
+          opts = { timeZone: settings.timezone },
+          today = currentZoneDay(now);
+        let refreshTasks = !!lastClockDay && lastClockDay !== today;
+        lastClockDay = today;
         if (
           settings.periodMode === "day" &&
           settings.followSystemDate !== false
         ) {
-          const parts = dateFormatter("en-CA", {
-              ...opts,
-              year: "numeric",
-              month: "2-digit",
-              day: "2-digit",
-            }).formatToParts(now),
-            part = (k) => parts.find((p) => p.type === k).value,
-            today = `${part("year")}-${part("month")}-${part("day")}`;
           if (settings.periodStart !== today || settings.periodEnd !== today) {
             settings.periodStart = today;
             settings.periodEnd = today;
             writeStorage(SETTINGS_KEY, JSON.stringify(settings));
-            if (typeof render === "function") render();
+            refreshTasks = true;
           }
         }
+        if (refreshTasks) render();
         const selectedDay =
             settings.periodMode === "day" && settings.periodStart,
           displayDate = selectedDay
@@ -3735,6 +3865,10 @@
         parent.append(el);
         return el;
       }
+      function isEmbeddedImage(src) {
+        return typeof src === "string" &&
+          /^data:image\/(png|jpe?g|gif|webp|bmp);base64,[a-z0-9+/=\s]+$/i.test(src);
+      }
       function sanitizeDraft(html) {
         const parsed = new DOMParser().parseFromString(
           String(html),
@@ -3785,11 +3919,7 @@
             for (const attribute of [...child.attributes])
               child.removeAttribute(attribute.name);
             if (child.tagName === "IMG") {
-              if (
-                !/^data:image\/(png|jpe?g|gif|webp|bmp);base64,[a-z0-9+/=\s]+$/i.test(
-                  src || "",
-                )
-              ) {
+              if (!isEmbeddedImage(src)) {
                 child.remove();
                 continue;
               }
@@ -3801,10 +3931,12 @@
         clean(parsed.body);
         return parsed.body.innerHTML;
       }
-      function matchesPeriod(task) {
+      function matchesPeriod(task, today = currentZoneDay()) {
+        if (carriedFrom(task, today)) return true;
         if (task.type === "main") {
           const start = task.date || task.dateStart || task.period?.start || "",
-            end = task.dateEnd || task.period?.end || start;
+            end = settings.periodMode === "day"
+              ? carryoverDueDate(task) : task.dateEnd || task.period?.end || start;
           if (start && end)
             return start <= settings.periodEnd && end >= settings.periodStart;
           if (settings.periodMode === "day") return false;
@@ -3816,6 +3948,35 @@
           task.period.end === settings.periodEnd
         );
       }
+      function carryoverDueDate(task) {
+        if (task.type === "main") {
+          const start = task.date || task.dateStart || task.period?.start || "",
+            end = task.dateEnd || task.date || task.dateStart || task.period?.end || "";
+          return validDate(start) && validDate(end) && end >= start ? end : "";
+        }
+        const period = task.period;
+        return period?.mode === "day" && period.start === period.end
+          ? period.end : "";
+      }
+      function carriedFrom(task, today = currentZoneDay()) {
+        if (settings.periodMode !== "day") return "";
+        const due = carryoverDueDate(task), day = settings.periodStart;
+        // Derive each day's view from the original record, without making copies
+        // or writing tasks at midnight. Future dates are not carried into early.
+        return due && due < day && day <= today &&
+          (!task.done || (task.completedOn && day <= task.completedOn))
+          ? due : "";
+      }
+      function carryoverLabel(date) {
+        const label = dateFormatter(localeNames[uiLocale], {
+          month: "long", day: "numeric", timeZone: "UTC",
+          ...(date.slice(0, 4) !== settings.periodStart.slice(0, 4) ? { year: "numeric" } : {}),
+        }).format(new Date(date + "T12:00:00Z"));
+        return uiLocale === "en" ? `Unfinished from ${label}`
+          : uiLocale === "ja" ? `${label} 未完了`
+          : uiLocale === "ko" ? `${label} 미완료`
+          : `${label}未完成`;
+      }
       function updatePeriodLabel() {
         const mode =
           { day: "日待办", week: "周待办", month: "月待办", custom: "自定义" }[
@@ -3824,7 +3985,10 @@
         setLocalizedText($("period-open"), `${mode}⌄`);
       }
       function renderGroup(type) {
-        const list = tasks.filter((t) => t.type === type && matchesPeriod(t)),
+        const today = currentZoneDay(),
+          list = tasks
+            .filter((t) => t.type === type && matchesPeriod(t, today))
+            .sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned)),
           host = $(type === "main" ? "main-tasks" : "side-tasks");
         $(type === "main" ? "main-count" : "side-count").textContent =
           `${list.filter((t) => !t.done).length} 项待办`;
@@ -3839,6 +4003,7 @@
         for (const task of list) {
           const row = document.createElement("div");
           row.className = "task" + (task.done ? " done" : "");
+          row.classList.toggle("pinned", !!task.pinned);
           const previous = previousRows.get(task.id);
           if (previous?.classList.contains("open")) row.classList.add("open");
           row.dataset.id = task.id;
@@ -3851,14 +4016,19 @@
             updateTask(task.id, (current) => ({
               ...current,
               done: !current.done,
+              completedOn: current.done ? "" : currentZoneDay(),
             }));
           };
-          const title = addText(row, "div", "task-title", task.title);
+          const heading = addText(row, "div", "task-heading");
+          const title = addText(heading, "div", "task-title", task.title);
           title.onclick = () => row.classList.toggle("open");
           title.title = "展开 / 收起说明";
+          const carried = carriedFrom(task, today);
+          if (carried && !task.done)
+            addText(heading, "span", "carryover-label", carryoverLabel(carried));
           if (type === "side" && task.time)
             addText(row, "span", "deadline", task.time);
-          else if (task.date) {
+          else if (task.date && (!carried || task.done)) {
             const end = task.dateEnd || task.date;
             if (end > task.date) {
               const shortDate = (value) => {
@@ -3915,7 +4085,7 @@
             content.onclick = noteCheck.onclick;
             if (item.html) content.innerHTML = sanitizeDraft(item.html);
             else content.textContent = item.text || "";
-            if (item.image && !item.html) {
+            if (isEmbeddedImage(item.image) && !item.html) {
               const img = document.createElement("img");
               img.src = item.image;
               img.alt = "草稿图片";
@@ -3940,10 +4110,83 @@
         }
       }
       function render() {
+        closeTaskMenu();
         renderGroup("main");
         renderGroup("side");
         updatePeriodLabel();
       }
+      let menuTaskId = null;
+      function focusTask(id) {
+        const row = [...activeDocument().querySelectorAll(".task")]
+          .find((item) => item.dataset.id === id);
+        (row?.querySelector(".check") || $("period-open")).focus({ preventScroll: true });
+      }
+      function closeTaskMenu(restoreFocus = false) {
+        const menu = $("task-menu");
+        if (menu.hidden) return;
+        menu.hidden = true;
+        if (restoreFocus) focusTask(menuTaskId);
+        menuTaskId = null;
+        reportWidgetBounds();
+      }
+      function openTaskMenu(row, x, y) {
+        const task = tasks.find((item) => item.id === row.dataset.id);
+        if (!task) return;
+        const menu = $("task-menu"), view = activeWindow();
+        menuTaskId = task.id;
+        setLocalizedText(menu.querySelector('[data-task-action="pin"] span'),
+          task.pinned ? "取消置顶任务" : "置顶任务");
+        // The menu lives outside the card so it can extend beyond its edges.
+        for (const property of ["--paper", "--ink", "--line", "--red"])
+          menu.style.setProperty(property, view.getComputedStyle(widget).getPropertyValue(property));
+        menu.hidden = false;
+        menu.style.left = Math.max(8, Math.min(x, view.innerWidth - menu.offsetWidth - 8)) + "px";
+        menu.style.top = Math.max(8, Math.min(y, view.innerHeight - menu.offsetHeight - 8)) + "px";
+        menu.querySelector("button").focus({ preventScroll: true });
+        reportWidgetBounds();
+      }
+      function offerTaskUndo(deletion, message = "任务已删除") {
+        toast(message, () => {
+          const next = [...tasks];
+          if (!next.some((task) => task.id === deletion.task.id))
+            next.splice(Math.min(deletion.index, next.length), 0, deletion.task);
+          if (!persist(next)) {
+            offerTaskUndo(deletion, "撤销失败，请重试");
+            return;
+          }
+          pendingTaskUndo = null;
+          toast("已撤销删除");
+          focusTask(deletion.task.id);
+        });
+      }
+      $("task-menu").onclick = (event) => {
+        const action = event.target.closest("[data-task-action]")?.dataset.taskAction;
+        if (!action) return;
+        const index = tasks.findIndex((task) => task.id === menuTaskId);
+        if (index < 0) { closeTaskMenu(true); return; }
+        const task = tasks[index];
+        closeTaskMenu(true);
+        if (action === "pin") {
+          if (updateTask(task.id, (current) => ({ ...current, pinned: !current.pinned })))
+            focusTask(task.id);
+        } else if (action === "delete" && persist(tasks.filter((item) => item.id !== task.id))) {
+          offerTaskUndo({ task, index });
+          $("period-open").focus({ preventScroll: true });
+        }
+      };
+      onDocument("contextmenu", (event) => {
+        const row = event.target.closest(".task");
+        if (!row || event.target.closest("input, textarea, [contenteditable]")) return;
+        event.preventDefault();
+        const rect = row.getBoundingClientRect();
+        openTaskMenu(row, event.clientX || rect.left + 20, event.clientY || rect.bottom);
+      });
+      onDocument("pointerdown", (event) => {
+        if (!$("task-menu").contains(event.target)) closeTaskMenu();
+      }, true);
+      onDocument("scroll", () => closeTaskMenu(), true);
+      window.addEventListener("blur", () => closeTaskMenu());
+      window.addEventListener("resize", () => closeTaskMenu());
       let taskDateMode = "day",
         taskDateStart = "",
         taskDateEnd = "",
@@ -4146,7 +4389,7 @@
         widget.style.setProperty("--fit-scale", fit.toFixed(3));
       });
       fitObserver.observe(widget);
-      if (localStorage.getItem(UI_KEY) === "1")
+      if (readStorage(UI_KEY) === "1")
         widget.classList.add("collapsed");
       function syncCollapse() {
         const collapsed = widget.classList.contains("collapsed");
@@ -4183,7 +4426,7 @@
         if (typeof syncScheduleFreeState === "function")
           syncScheduleFreeState();
       }
-      setLocked(localStorage.getItem(LOCK_KEY) === "1", false);
+      setLocked(readStorage(LOCK_KEY) === "1", false);
       lockButton.onclick = () =>
         setLocked(!widget.classList.contains("locked"));
       let widgetDrag = null,
@@ -4271,7 +4514,7 @@
         .querySelectorAll(".resize-handle")
         .forEach((handle) => {
           handle.addEventListener("pointerdown", (e) => {
-            if (widget.classList.contains("locked")) return;
+            if (e.button !== 0 || widget.classList.contains("locked")) return;
             e.preventDefault();
             const r = widget.getBoundingClientRect();
             resizeState = {
@@ -4321,6 +4564,9 @@
             widget.style.top = top + "px";
             widget.style.width = width + "px";
             widget.style.height = height + "px";
+            const position = clampWidgetPosition(left, top);
+            widget.style.left = position.left + "px";
+            widget.style.top = position.top + "px";
             syncDockedScheduleToWidget();
             reportWidgetBounds();
           });
@@ -4443,8 +4689,8 @@
       const editor = $("draft-editor"),
         draftWindow = $("draft-window");
       try {
-        editor.innerHTML = sanitizeDraft(localStorage.getItem(DRAFT_KEY) || "");
-        $("draft-title").value = localStorage.getItem(DRAFT_TITLE_KEY) || "";
+        editor.innerHTML = sanitizeDraft(readStorage(DRAFT_KEY) || "");
+        $("draft-title").value = readStorage(DRAFT_TITLE_KEY) || "";
       } catch {}
       $("draft-title").addEventListener("input", () =>
         writeStorage(DRAFT_TITLE_KEY, $("draft-title").value),
@@ -4771,6 +5017,10 @@
         return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
       }
       function updatePeriodRange(value) {
+        if (!validDate(value)) {
+          periodDraft.start = periodDraft.end = "";
+          return;
+        }
         const d = new Date(value + "T00:00:00");
         if (periodDraft.mode === "day") {
           periodDraft.start = value;
@@ -4883,14 +5133,14 @@
           periodDraft.start = inputs[0].value;
           periodDraft.end = inputs[1].value;
           if (
-            !periodDraft.start ||
-            !periodDraft.end ||
+            !validDate(periodDraft.start) ||
+            !validDate(periodDraft.end) ||
             periodDraft.end < periodDraft.start
           ) {
             toast("请检查自定义周期");
             return;
           }
-        } else if (!periodDraft.start || !periodDraft.end) {
+        } else if (!validDate(periodDraft.start) || !validDate(periodDraft.end)) {
           toast("请选择日期");
           return;
         }
@@ -4934,7 +5184,7 @@
         );
       }
       try {
-        courses = JSON.parse(localStorage.getItem(SCHEDULE_KEY) || "[]");
+        courses = JSON.parse(readStorage(SCHEDULE_KEY) || "[]");
         courses = normalizeCourses(courses);
       } catch {
         courses = [];
@@ -5171,7 +5421,7 @@
         scheduleResizeHandles = [
           ...scheduleCard.querySelectorAll("[data-schedule-resize]"),
         ];
-      let scheduleLocked = localStorage.getItem(SCHEDULE_LOCK_KEY) !== "0";
+      let scheduleLocked = readStorage(SCHEDULE_LOCK_KEY) !== "0";
       let scheduleLayout = {
         floating: false,
         left: 28,
@@ -5182,7 +5432,7 @@
       try {
         scheduleLayout = {
           ...scheduleLayout,
-          ...JSON.parse(localStorage.getItem(SCHEDULE_LAYOUT_KEY) || "{}"),
+          ...JSON.parse(readStorage(SCHEDULE_LAYOUT_KEY) || "{}"),
         };
       } catch {}
       function persistScheduleLayout() {
@@ -5378,7 +5628,7 @@
         reportScheduleBounds();
       }
       let scheduleCollapsed =
-        localStorage.getItem("minimal-task-widget-schedule-collapsed-v1") ===
+        readStorage("minimal-task-widget-schedule-collapsed-v1") ===
         "1";
       $("schedule-collapse").onclick = () => {
         scheduleCollapsed = !scheduleCollapsed;
@@ -5437,6 +5687,7 @@
           });
       });
       function restoreFromPinWindow() {
+        closeTaskMenu();
         if (!pipRestore) return;
         const saved = pipRestore;
         pipRestore = null;
@@ -5520,6 +5771,7 @@
             width,
             height,
           });
+          closeTaskMenu();
           pipWindow = pip;
           pipRestore = restore;
           pip.document.title = "主线 · 支线";
@@ -5555,7 +5807,9 @@
           for (const { type, handler, options } of documentListeners)
             pip.document.addEventListener(type, handler, options);
           localizationObserver.observe(pip.document.body, localizationOptions);
+          pip.addEventListener("blur", () => closeTaskMenu());
           pip.addEventListener("resize", () => {
+            closeTaskMenu();
             if (!scheduleLayout.floating) snapScheduleHome(false);
             else {
               clampScheduleLayout();
@@ -5934,6 +6188,30 @@
       };
       updateScheduleVisibility();
       function handleGlobalKeydown(e) {
+        const menu = $("task-menu");
+        if (!menu.hidden) {
+          if (e.key === "Escape" || e.key === "Tab") {
+            closeTaskMenu(true);
+            if (e.key === "Escape") e.preventDefault();
+          } else if (["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) {
+            e.preventDefault();
+            const buttons = [...menu.querySelectorAll("button")];
+            const index = buttons.indexOf(activeDocument().activeElement);
+            const next = e.key === "Home" ? 0 : e.key === "End" ? buttons.length - 1
+              : (index + (e.key === "ArrowDown" ? 1 : -1) + buttons.length) % buttons.length;
+            buttons[next].focus();
+          }
+          return;
+        }
+        if (e.key === "ContextMenu" || (e.shiftKey && e.key === "F10")) {
+          const row = e.target.closest(".task");
+          if (row && !e.target.closest("input, textarea, [contenteditable]")) {
+            e.preventDefault();
+            const rect = row.getBoundingClientRect();
+            openTaskMenu(row, rect.left + 20, rect.bottom);
+            return;
+          }
+        }
         if (e.key === "Escape") {
           activeDocument().querySelectorAll(".scrim.open").forEach(closeScrim);
           hideDraft();
@@ -6014,6 +6292,7 @@
       applyLanguage();
       reportWidgetBounds();
       reportScheduleBounds();
+      if (storageReadFailed) toast("本地数据读取失败，请重新打开后重试");
     </script>
   </body>
 </html>

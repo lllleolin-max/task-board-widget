@@ -165,6 +165,51 @@ test('invalid custom ranges stay open and preserve the previous filter', async (
   await expect(page.locator('#period-open')).toHaveText('日待办⌄');
 });
 
+for (const mode of ['week', 'month']) {
+  test(`clearing the ${mode} date keeps the dialog open and preserves the active filter`, async ({ page }) => {
+    await addTask(page, '清空筛选日期后保留的任务');
+    const previous = await stored(page, SETTINGS);
+    await page.locator('#period-open').click();
+    await page.locator(`[data-period="${mode}"]`).click();
+    await page.locator('#period-range input').fill('');
+    await page.locator('#period-apply').click();
+    await expect(page.locator('#period-scrim')).toHaveClass(/open/);
+    await expect(page.locator('#toast')).toHaveText('请选择日期');
+    expect(await stored(page, SETTINGS)).toEqual(previous);
+    await page.locator('#period-cancel').click();
+    await expect(page.locator('.task-title')).toHaveText('清空筛选日期后保留的任务');
+  });
+}
+
+test('weekly deadlines refresh after a manual date change and a later clock day without changing the filter', async ({ page }) => {
+  const task = await addTask(page, '跨日截止提醒');
+  await choosePeriod(page, 'week');
+  await expect(task.locator('.deadline')).toHaveText('今天');
+  await page.locator('#clock').click();
+  await page.locator('#manual-datetime').fill('2026-09-30T12:00');
+  await page.locator('#clock-save').click();
+  await expect(task.locator('.deadline')).toHaveText('逾期 1 天');
+  await page.clock.setFixedTime(new Date('2026-09-30T04:00:00Z'));
+  await expect(task.locator('.deadline')).toHaveText('逾期 2 天');
+  expect(await stored(page, SETTINGS)).toMatchObject({
+    periodMode: 'week', periodStart: '2026-09-28', periodEnd: '2026-10-04',
+  });
+});
+
+test('right-button dragging a widget resize handle leaves its dimensions unchanged', async ({ page }) => {
+  const handle = page.locator('[data-resize="w"]');
+  await handle.hover();
+  const before = await page.locator('#widget').boundingBox();
+  const box = await handle.boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down({ button: 'right' });
+  await page.mouse.move(box.x - 80, box.y + box.height / 2, { steps: 10 });
+  await page.mouse.up({ button: 'right' });
+  const after = await page.locator('#widget').boundingBox();
+  expect({ x: after.x, width: after.width }).toEqual({ x: before.x, width: before.width });
+  await expect(page.locator('#widget')).not.toHaveClass(/window-interacting/);
+});
+
 test('inline notes support cancel, keyboard save and completion persistence', async ({ page }) => {
   const row = await addTask(page, '有步骤的任务');
   await row.locator('.task-title').click();
@@ -511,19 +556,33 @@ test('changing the UI language never translates user task, note or course conten
 
 test('stored rich text strips active content and keeps formatting and embedded PNGs', async ({ page }) => {
   await addTask(page, '富文本任务');
+  const remoteImage = 'https://audit.invalid/pixel.png';
+  const imageRequests = [];
+  await page.route('https://audit.invalid/**', route => {
+    imageRequests.push(route.request().url());
+    return route.fulfill({ status: 204 });
+  });
   const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==';
   const html = '<b>保留加粗</b><script>window.unsafeRan=true</script><img src="x" onerror="window.unsafeRan=true"><iframe srcdoc="bad"></iframe><img src="' + png + '" onload="window.unsafeRan=true">';
-  await page.evaluate(({ taskKey, html }) => {
+  await page.evaluate(({ taskKey, html, png, remoteImage }) => {
     const tasks = JSON.parse(localStorage.getItem(taskKey));
     tasks[0].memos = [{ title: '安全备注', html }];
+    tasks[0].items = [
+      { text: '旧格式本地图片', image: png },
+      { text: '远程图片', image: remoteImage },
+      { text: 'SVG 图片', image: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg"/>' },
+    ];
     localStorage.setItem(taskKey, JSON.stringify(tasks));
     localStorage.setItem('minimal-task-widget-draft-html-v1', html);
-  }, { taskKey: TASKS, html });
+  }, { taskKey: TASKS, html, png, remoteImage });
   await page.reload();
   await page.locator('.expand').click();
   await expect(page.locator('.memo-body b')).toHaveText('保留加粗');
   await expect(page.locator('.memo-body script, .memo-body iframe, .memo-body [onerror], .memo-body [onload]')).toHaveCount(0);
   await expect(page.locator('.memo-body img')).toHaveAttribute('src', png);
+  await expect(page.locator('.note-text img')).toHaveCount(1);
+  await expect(page.locator('.note-text img')).toHaveAttribute('src', png);
+  expect(imageRequests).toEqual([]);
   await page.locator('#draft-open').click();
   await expect(page.locator('#draft-editor script, #draft-editor iframe, #draft-editor [onerror], #draft-editor [onload]')).toHaveCount(0);
   expect(await page.evaluate(() => window.unsafeRan)).toBeUndefined();
