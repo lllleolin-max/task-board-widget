@@ -1349,6 +1349,10 @@
       .period-trigger:hover {
         background: rgba(96, 123, 97, 0.1);
       }
+      #period-today {
+        margin-right: auto;
+        color: var(--green);
+      }
       .period-dialog {
         width: min(330px, 100%);
         background: var(--paper);
@@ -2480,6 +2484,7 @@
         </div>
         <div class="period-range" id="period-range"></div>
         <div class="actions">
+          <button type="button" class="cancel" id="period-today">今天</button>
           <button type="button" class="cancel" id="period-cancel">取消</button
           ><button type="button" class="save" id="period-apply">应用</button>
         </div>
@@ -3169,6 +3174,7 @@
           "選擇檢視日期",
         ],
         选择日期: ["Choose date", "日付を選択", "날짜 선택", "選擇日期"],
+        查看当天: ["View this day", "この日を表示", "이 날짜 보기", "查看當天"],
         日待办: ["Today", "今日", "오늘", "今日待辦"],
         周待办: ["Week", "今週", "이번 주", "本週待辦"],
         月待办: ["Month", "今月", "이번 달", "本月待辦"],
@@ -3366,6 +3372,18 @@
           "常に手前に表示",
           "항상 위에 표시",
           "桌面置頂",
+        ],
+        将主体置顶到桌面浮窗: [
+          "Keep the widget on top",
+          "ウィジェットを最前面に表示",
+          "위젯을 항상 위에 표시",
+          "將主體置頂",
+        ],
+        将课表置顶到桌面浮窗: [
+          "Keep the schedule on top",
+          "時間割を最前面に表示",
+          "시간표를 항상 위에 표시",
+          "將課表置頂",
         ],
         将主体和课表置顶到桌面浮窗: [
           "Keep the widget and schedule on top",
@@ -3572,6 +3590,10 @@
         const value = String(text),
           index = localeIndex[uiLocale];
         if (index === undefined) return value;
+        if (Array.isArray(lexicon[value])) return lexicon[value][index];
+        const trimmed = value.trim();
+        if (trimmed && trimmed !== value)
+          return value.replace(trimmed, () => tr(trimmed));
         const count = value.match(/^(\d+) 项待办$/);
         if (count) {
           const n = Number(count[1]);
@@ -3583,7 +3605,7 @@
                 ? `${n}개 할 일`
                 : `${n} 項待辦`;
         }
-        return Array.isArray(lexicon[value]) ? lexicon[value][index] : value;
+        return value;
       }
       const originalText = new WeakMap();
       const sourceText = new Map();
@@ -3592,7 +3614,13 @@
           if (!sourceText.has(text)) sourceText.set(text, source);
       }
       function untr(text) {
-        return sourceText.get(String(text)) || String(text);
+        const value = String(text);
+        if (Array.isArray(lexicon[value])) return value;
+        if (sourceText.has(value)) return sourceText.get(value);
+        const trimmed = value.trim();
+        return trimmed
+          ? value.replace(trimmed, () => sourceText.get(trimmed) || trimmed)
+          : value;
       }
       function setLocalizedText(element, source, localized = tr(source)) {
         element.textContent = localized;
@@ -5127,6 +5155,29 @@
       $("period-scrim").onclick = (e) => {
         if (e.target === $("period-scrim")) closeScrim($("period-scrim"));
       };
+      function applyPeriodSelection(
+        period,
+        followSystemDate = period.mode === "day" &&
+          period.start === currentZoneDay(),
+      ) {
+        if (
+          !saveSettings({
+            ...settings,
+            periodMode: period.mode,
+            periodStart: period.start,
+            periodEnd: period.end,
+            followSystemDate,
+          })
+        )
+          return;
+        closeScrim($("period-scrim"));
+        render();
+        updateClock();
+      }
+      $("period-today").onclick = () => {
+        const today = currentZoneDay();
+        applyPeriodSelection({ mode: "day", start: today, end: today }, true);
+      };
       $("period-apply").onclick = () => {
         const inputs = $("period-range").querySelectorAll("input");
         if (periodDraft.mode === "custom") {
@@ -5144,21 +5195,7 @@
           toast("请选择日期");
           return;
         }
-        if (
-          !saveSettings({
-            ...settings,
-            periodMode: periodDraft.mode,
-            periodStart: periodDraft.start,
-            periodEnd: periodDraft.end,
-            followSystemDate:
-              periodDraft.mode === "day" &&
-              periodDraft.start === currentZoneDay(),
-          })
-        )
-          return;
-        closeScrim($("period-scrim"));
-        render();
-        updateClock();
+        applyPeriodSelection(periodDraft);
       };
       const SCHEDULE_KEY = "minimal-task-widget-schedule-v1";
       let weekdays = Array.from({ length: 7 }, (_, i) =>
