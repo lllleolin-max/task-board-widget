@@ -4,6 +4,7 @@
 
 - 修复 [#4](https://github.com/lllleolin-max/task-board-widget/issues/4)：补齐日期查看与置顶提示翻译，识别 HTML 换行缩进中的界面文案，修复英文下“单日”“日期范围”等按钮残留中文。
 - 处理 [#5](https://github.com/lllleolin-max/task-board-widget/issues/5)：日期和待办周期弹窗新增“今天”快捷按钮，一键返回当前应用时区／时钟下的日待办，并恢复跨日跟随；保留历史任务、课表、手动时间与其他设置。
+- 将 Electron 更新至 44.10.0，并更新构建依赖中的 undici、fast-uri，修复本轮 CI 安全审计发现的已知漏洞；不更改应用数据目录或存储格式。
 
 ## 1.1.5-dev.3（开发中）
 
