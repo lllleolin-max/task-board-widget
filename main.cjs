@@ -59,8 +59,8 @@ function showWindow() {
   }
   syncWindowVisibility();
   if (isVisible(mainWindow)) mainWindow.focus();
-  if (nativeHitTesting) {
-    syncDesktopStacking();
+  if (nativeHitTesting) syncDesktopStacking();
+  if (nativeHitTesting || process.platform === 'darwin') {
     const modal = panelWindow(modalPanel);
     if (isVisible(modal)) modal.moveTop();
   }
@@ -159,6 +159,25 @@ function syncNativeTopmost() {
   if (raised && isVisible(modal) && modal.isAlwaysOnTop()) modal.moveTop();
 }
 
+function syncMacModalStacking() {
+  const bounds = { widget: lastWidgetBounds, schedule: lastScheduleBounds };
+  const modal = windowsShown && !isQuitting
+    ? panels.find(name => bounds[name]?.modal && isVisible(panelWindow(name))) || null : null;
+  let changed = modal !== modalPanel;
+  modalPanel = modal;
+  for (const panel of panels) {
+    const win = panelWindow(panel);
+    if (!win || win.isDestroyed()) continue;
+    const modalBoost = modal === panel && panels.some(name => name !== panel && pinned[name] && isVisible(panelWindow(name)));
+    const wanted = pinned[panel] || modalBoost;
+    if (win.isAlwaysOnTop() === wanted) continue;
+    win.setAlwaysOnTop(wanted, 'floating');
+    changed = true;
+  }
+  // Reorder within the same level as a pinned sibling; user Pins stay separate.
+  if (changed && modal) panelWindow(modal).moveTop();
+}
+
 function createTray() {
   const icon = nativeImage.createFromPath(path.join(__dirname, 'build', 'icon.png'));
   tray = new Tray(icon);
@@ -200,7 +219,10 @@ function setInteractivePanel(panel) {
   }
   interactivePanel = panel;
   const active = panelWindow(panel);
-  if (active && !active.isDestroyed() && active.isVisible()) active.showInactive();
+  if (isVisible(active) && (process.platform !== 'darwin' || active.isAlwaysOnTop() ||
+      panels.some(name => { const win = panelWindow(name); return isVisible(win) && win.isFocused(); }))) {
+    active.showInactive();
+  }
 }
 
 function routePointerToPanel() {
@@ -208,6 +230,7 @@ function routePointerToPanel() {
     updateInputRegions();
     return;
   }
+  if (process.platform === 'darwin') syncMacModalStacking();
   if (isQuitting || (!isVisible(mainWindow) && !isVisible(scheduleWindow))) {
     setInteractivePanel(null);
     return;
@@ -299,6 +322,7 @@ function createWindow(panel) {
     // ignoring its simple card-shaped region, and stops the sibling's frames.
     // Tool windows are excluded as occluders; ordinary apps still occlude us.
     ...(nativeHitTesting ? { type: 'toolbar' } : {}),
+    ...(process.platform === 'darwin' ? { acceptFirstMouse: true } : {}),
     transparent: true,
     backgroundColor: '#00000000',
     hasShadow: false,
@@ -386,12 +410,16 @@ else {
       pinned[panel] = !!enabled;
       syncNativeTopmost();
       if (enabled && !windowsDesktop.isTopmost(win.getNativeWindowHandle())) pinned[panel] = false;
+    } else if (process.platform === 'darwin') {
+      pinned[panel] = !!enabled;
+      syncMacModalStacking();
+      if (enabled && !win.isAlwaysOnTop()) pinned[panel] = false;
     } else {
       win.setAlwaysOnTop(!!enabled, 'floating');
       pinned[panel] = win.isAlwaysOnTop();
     }
     // Re-stack each transparent panel after removing its topmost band without taking focus.
-    if (!nativeHitTesting && !pinned[panel] && win.isVisible()) win.showInactive();
+    if (!nativeHitTesting && process.platform !== 'darwin' && !pinned[panel] && win.isVisible()) win.showInactive();
     routePointerToPanel();
     return { ...pinned };
   });

@@ -34,6 +34,7 @@ async function desktop({ lock = true, platform = 'darwin', packaged = true, floa
     showInactive() { this.raised = (this.raised || 0) + 1; this.topOrder = ++topSequence; if (!this.visible) { this.visible = true; this.emit('show'); } }
     hide() { if (this.visible) { this.visible = false; this.emit('hide'); } }
     focus() { this.focused = true; foregroundContext = 'panel'; this.topOrder = ++topSequence; }
+    isFocused() { return !!this.focused; }
     moveTop() { this.topMoves = (this.topMoves || 0) + 1; this.topOrder = ++topSequence; covered.delete(this); }
     getNativeWindowHandle() { return this; }
     getBounds() { return this.bounds; }
@@ -89,8 +90,6 @@ async function desktop({ lock = true, platform = 'darwin', packaged = true, floa
   };
   vm.runInNewContext(fs.readFileSync(path.join(root, 'main.cjs'), 'utf8'), {
     require: (name) => name === 'electron' ? electron : name === './windows-desktop.cjs' ? {
-      isDesktopForeground: () => foregroundContext === 'desktop',
-      isDesktopAbove: (win) => covered.has(win),
       foregroundContext: () => foregroundContext,
       isTopmost: win => win.nativeTopmost,
       ensureTopmost: (win, enabled) => {
@@ -140,6 +139,8 @@ test('creates two sandboxed transparent panels, using polling on macOS only whil
     assert.equal(win.options.webPreferences.contextIsolation, true);
     assert.equal(win.options.webPreferences.nodeIntegration, false);
     assert.equal(win.options.webPreferences.sandbox, true);
+    assert.equal(win.options.webPreferences.partition, undefined, 'Keep the existing default persistent storage partition');
+    assert.equal(win.options.webPreferences.session, undefined, 'Do not replace the session holding saved tasks and courses');
     assert.equal(win.ignoreMouse, true);
   }
   env.load();
@@ -148,13 +149,15 @@ test('creates two sandboxed transparent panels, using polling on macOS only whil
   assert.deepEqual([...env.intervals.values()].map((timer) => timer.delay), [16]);
 });
 
-test('both Windows panels use toolbar windows while other platforms retain the default type', async () => {
+test('platform window options preserve Windows transparency and macOS first-click input', async () => {
   for (const platform of ['win32', 'darwin', 'linux']) {
     const { windows } = await desktop({ platform });
     assert.equal(windows.length, 2);
     for (const win of windows) {
       assert.equal(win.options.type, platform === 'win32' ? 'toolbar' : undefined,
         `${platform} ${win.panel} window type`);
+      assert.equal(win.options.acceptFirstMouse, platform === 'darwin' ? true : undefined,
+        `${platform} ${win.panel} first-click input`);
     }
   }
 });
@@ -183,6 +186,69 @@ test('routes normal, overlapping, modal and pinned regions, leaving the desktop 
   assert.equal(schedule.ignoreMouse, false);
   env.cursor(600, 600);
   assert.equal(widget.ignoreMouse, true); assert.equal(schedule.ignoreMouse, true);
+});
+
+test('macOS hover does not raise unpinned panels over another application', async () => {
+  const env = await desktop(); env.load();
+  const [widget, schedule] = env.windows;
+  env.send('report-widget-bounds', rect()); env.send('report-schedule-bounds', rect(200, 10));
+  env.cursor(600, 600); env.foreground('other');
+  const shown = env.windows.map(win => win.raised);
+  env.cursor(30, 30);
+  assert.equal(widget.ignoreMouse, false);
+  env.cursor(230, 30);
+  assert.equal(schedule.ignoreMouse, false);
+  assert.deepEqual(env.windows.map(win => win.raised), shown,
+    'routing mouse input must not bring covered unpinned windows in front of the foreground app');
+  widget.focus(); env.cursor(600, 600); env.cursor(230, 30);
+  assert.equal(schedule.raised, shown[1] + 1, 'panels may reorder while the app owns keyboard focus');
+  assert.ok(!schedule.focused, 'hovering a sibling must not take keyboard focus');
+});
+
+test('macOS modals cover pinned siblings while preserving independent user Pins', async () => {
+  for (const modal of ['widget', 'schedule']) {
+    const env = await desktop(); env.load();
+    env.send('report-widget-bounds', rect()); env.send('report-schedule-bounds', rect(200, 10));
+    const sibling = modal === 'widget' ? 'schedule' : 'widget';
+    const owner = env.windows.find(win => win.panel === modal);
+    const other = env.windows.find(win => win.panel === sibling);
+    env.invoke('set-pin', sibling, true);
+    env.send(`report-${modal}-bounds`, rect(10, 10, 100, 100, { modal: true }));
+    assert.equal(owner.isAlwaysOnTop(), true, 'the modal must reach the pinned sibling window level');
+    assert.ok(owner.topOrder > other.topOrder, 'the modal must be above the sibling in that level');
+    assert.equal(owner.ignoreMouse, false); assert.equal(other.ignoreMouse, true);
+    const expectedPins = { widget: sibling === 'widget', schedule: sibling === 'schedule' };
+    assert.deepEqual(plain(env.invoke('get-pins')), expectedPins);
+    const calls = owner.pinCalls.length;
+    env.invoke('set-pin', modal, false);
+    assert.equal(owner.isAlwaysOnTop(), true, 'unpinning must not drop the active modal boost');
+    assert.equal(owner.pinCalls.length, calls, 'keeping the modal level must not pulse through the normal level');
+    env.trays[0].emit('click');
+    assert.equal(owner.isAlwaysOnTop(), false, 'hiding releases a temporary modal boost');
+    env.app.emit('second-instance');
+    assert.ok(owner.isAlwaysOnTop() && owner.topOrder > other.topOrder,
+      'explicit show must restore modal order after focusing the main panel');
+    assert.deepEqual(plain(env.invoke('get-pins')), expectedPins);
+    env.send(`report-${modal}-bounds`, rect());
+    assert.equal(owner.isAlwaysOnTop(), false, 'closing the modal returns an unpinned owner to the normal level');
+    assert.equal(other.isAlwaysOnTop(), true);
+  }
+});
+
+test('macOS reload, crash and disabling the course panel release its temporary modal level', async () => {
+  for (const reason of ['reload', 'crash', 'disabled']) {
+    const env = await desktop(); env.load();
+    env.send('report-widget-bounds', rect()); env.send('report-schedule-bounds', rect(200, 10));
+    env.invoke('set-pin', 'widget', true);
+    const schedule = env.windows[1];
+    env.send('report-schedule-bounds', rect(200, 10, 100, 100, { modal: true }));
+    assert.equal(schedule.isAlwaysOnTop(), true);
+    if (reason === 'reload') schedule.webContents.emit('did-start-loading');
+    else if (reason === 'crash') schedule.webContents.emit('render-process-gone');
+    else env.send('report-schedule-bounds', rect(0, 0, 0, 0, { visible: false, modal: true }));
+    assert.equal(schedule.isAlwaysOnTop(), false, `${reason} releases the temporary boost`);
+    assert.deepEqual(plain(env.invoke('get-pins')), { widget: true, schedule: false });
+  }
 });
 
 test('Windows keeps both panel regions immediately clickable without cursor polling or hover focus', async () => {
@@ -664,10 +730,9 @@ for (const pins of [
 
 function nativeDesktop({ failHook = 0, unhookFails = false, positionFails = false, positionIgnored = false } = {}) {
   const module = { exports: {} };
-  let front = 3, visits = 0, nextImmediate = 0;
-  const above = new Map([[1, 2], [2, 3], [3, 0]]);
+  let front = 3, nextImmediate = 0;
   const classes = new Map([[2, 'WorkerW'], [3, 'OrdinaryApp']]);
-  const visible = new Set([3]), styles = new Map(), positions = [];
+  const styles = new Map(), positions = [];
   const hooks = [], unhooked = [], registered = new Set(), released = [], immediate = new Map();
   const native = {
     GetForegroundWindow: () => front,
@@ -680,12 +745,6 @@ function nativeDesktop({ failHook = 0, unhookFails = false, positionFails = fals
       if (!positionIgnored && (after === -1 || after === -2)) styles.set(Number(hwnd), after === -1 ? style | 8 : style & ~8);
       return 1;
     },
-    GetWindow: (hwnd, command) => {
-      assert.equal(command, 3);
-      assert.ok(++visits <= 4096, 'cyclic native window order must not hang the app');
-      return above.get(Number(hwnd)) || 0;
-    },
-    IsWindowVisible: (hwnd) => Number(visible.has(Number(hwnd))),
     GetClassNameW: (hwnd, buffer) => {
       const name = classes.get(Number(hwnd)) || '';
       buffer.write(name, 'utf16le');
@@ -719,37 +778,12 @@ function nativeDesktop({ failHook = 0, unhookFails = false, positionFails = fals
   });
   const api = module.exports, handle = Buffer.alloc(8);
   handle.writeBigUInt64LE(1n);
-  return { api, handle, above, classes, visible, styles, positions, hooks, unhooked, registered, released, immediate,
+  return { api, handle, classes, styles, positions, hooks, unhooked, registered, released, immediate,
     foreground: value => { front = value; },
-    resetVisits: () => { visits = 0; }, visits: () => visits,
     emit: (event, hwnd = 100, object = 0, child = 0) => hooks[0].callback(hooks[0].handle, event, hwnd, object, child, 1, 0),
     flush: () => { const pending = [...immediate.values()]; immediate.clear(); pending.forEach(callback => callback()); },
   };
 }
-
-test('Windows desktop Z-order checks visible shell windows and bounds traversal during changes', () => {
-  const env = nativeDesktop();
-  const { api, handle, above, classes, visible } = env;
-  assert.equal(api.isDesktopForeground(), false);
-  assert.equal(api.isDesktopAbove(handle), false, 'invisible desktop workers do not count as occlusion');
-  visible.add(2); env.foreground(2);
-  assert.equal(api.isDesktopForeground(), true);
-  assert.equal(api.isDesktopAbove(handle), true);
-  visible.delete(2); classes.set(3, 'Progman');
-  assert.equal(api.isDesktopAbove(handle), true, 'visible Progman is detected farther up the Z-order');
-  classes.set(3, 'OrdinaryApp'); above.set(3, 2); env.resetVisits();
-  assert.equal(api.isDesktopAbove(handle), false);
-  assert.ok(env.visits() <= 4096, 'changing or cyclic native window order cannot hang the app');
-});
-
-test('Windows desktop Z-order detects the desktop beyond 600 intervening windows', () => {
-  const { api, handle, above, classes, visible } = nativeDesktop();
-  above.clear(); classes.clear(); visible.clear();
-  for (let hwnd = 1; hwnd < 702; hwnd++) above.set(hwnd, hwnd + 1);
-  classes.set(702, 'WorkerW');
-  visible.add(702);
-  assert.equal(api.isDesktopAbove(handle), true, 'a desktop 701 steps above the panel must be detected');
-});
 
 test('Windows foreground context distinguishes desktop, own panels, ordinary apps and activation gaps', () => {
   const env = nativeDesktop();
