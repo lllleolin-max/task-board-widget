@@ -1,5 +1,49 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
+// Reconcile before any application script can interpret an old/empty database.
+// Keep raw strings, including fields this version does not understand.
+let storageReady = false;
+let storageRecovered = false;
+try {
+  const observed = Object.fromEntries(Object.keys(localStorage).map(key => [key, localStorage.getItem(key)]));
+  const result = ipcRenderer.sendSync('desktop:storage-bootstrap', observed);
+  if (!result?.ok) throw new Error('Storage safeguard unavailable');
+  for (const [key, value] of Object.entries(result.values)) {
+    if (localStorage.getItem(key) === value) continue;
+    if (value === null) localStorage.removeItem(key);
+    else localStorage.setItem(key, value);
+  }
+  storageReady = true;
+  storageRecovered = !!result.recovered;
+} catch { /* Do not allow an empty fallback to overwrite unreadable saved data. */ }
+finally {
+  try { ipcRenderer.sendSync('desktop:storage-ready'); }
+  catch { storageReady = false; }
+}
+
+function persistStorage(key, value) {
+  if (!storageReady || typeof key !== 'string' || (value !== null && typeof value !== 'string')) return false;
+  let previous;
+  try {
+    previous = localStorage.getItem(key);
+    if (value === null) localStorage.removeItem(key);
+    else localStorage.setItem(key, value);
+  } catch { return false; }
+  let rollback = previous;
+  try {
+    const result = ipcRenderer.sendSync('desktop:storage-write', key, value, previous);
+    if (result === true) return true;
+    if (result && (result.current === null || typeof result.current === 'string')) rollback = result.current;
+  } catch { /* Roll back unless the independent snapshot committed as well. */ }
+  try {
+    if (localStorage.getItem(key) === value) {
+      if (rollback === null) localStorage.removeItem(key);
+      else localStorage.setItem(key, rollback);
+    }
+  } catch { storageReady = false; }
+  return false;
+}
+
 function subscribe(channel, callback) {
   const listener = (_event, value) => callback(value);
   ipcRenderer.on(channel, listener);
@@ -27,6 +71,9 @@ window.addEventListener('blur', releasePointerCapture);
 window.addEventListener('pagehide', releasePointerCapture);
 
 contextBridge.exposeInMainWorld('desktopBridge', {
+  isStorageReady: () => storageReady,
+  storageRecovered,
+  writeStorage: persistStorage,
   setPin: (panel, enabled) => ipcRenderer.invoke('desktop:set-pin', panel, !!enabled),
   getPins: () => ipcRenderer.invoke('desktop:get-pins'),
   getStartup: () => ipcRenderer.invoke('desktop:get-startup'),

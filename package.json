@@ -1,6 +1,6 @@
 {
   "name": "task-board-widget",
-  "version": "1.1.5-dev.4",
+  "version": "1.1.5-dev.5",
   "description": "A lightweight bilingual-ready task and schedule widget",
   "main": "main.cjs",
   "author": "lllleolin-max",
@@ -15,6 +15,7 @@
     "check": "node scripts/check.cjs",
     "verify": "npm run check && npm test && npm run test:browser",
     "test:electron": "node tests/electron-smoke.cjs",
+    "test:electron-storage": "node tests/electron-storage.cjs",
     "test:installer": "node tests/test-installer.cjs"
   },
   "devDependencies": {
@@ -31,6 +32,7 @@
       "main.cjs",
       "preload.cjs",
       "windows-desktop.cjs",
+      "storage-guard.cjs",
       "themes/*-bg.png",
       "themes/anu-crest.svg",
       "themes/ANU-crest-attribution.txt",

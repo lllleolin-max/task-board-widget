@@ -69,6 +69,7 @@ async function desktop({ lock = true, platform = 'darwin', packaged = true, floa
   const app = Object.assign(new EventEmitter(), {
     name: 'Taskboard', quits: 0, login: false, isPackaged: packaged,
     getAppPath: () => 'D:/My Apps/Taskboard',
+    getPath: () => 'D:/isolated-test-profile',
     requestSingleInstanceLock: () => lock,
     whenReady: () => Promise.resolve(),
     quit() { this.quits++; this.emit('before-quit'); },
@@ -89,7 +90,9 @@ async function desktop({ lock = true, platform = 'darwin', packaged = true, floa
     shell: { openExternal: (url) => { opened.push(url); return Promise.resolve(); } },
   };
   vm.runInNewContext(fs.readFileSync(path.join(root, 'main.cjs'), 'utf8'), {
-    require: (name) => name === 'electron' ? electron : name === './windows-desktop.cjs' ? {
+    require: (name) => name === 'electron' ? electron : name === './storage-guard.cjs' ? {
+      createStorageGuard: () => ({ bootstrap: value => value, write() {}, read: () => 'authoritative' }),
+    } : name === './windows-desktop.cjs' ? {
       foregroundContext: () => foregroundContext,
       isTopmost: win => win.nativeTopmost,
       ensureTopmost: (win, enabled) => {
@@ -1135,18 +1138,71 @@ test('macOS keeps editing menu roles and hides the Dock icon', async () => {
   assert.ok(env.Menu.application.some((menu) => menu.submenu.some((item) => item.role === 'paste')));
 });
 
-function preload() {
+test('raw storage IPC rejects foreign windows and subframes', async () => {
+  const env = await desktop();
+  for (const event of [{ sender: {}, senderFrame: {} }, { ...env.event(), senderFrame: {} }]) {
+    env.ipcMain.emit('desktop:storage-bootstrap', event, { tasks: '[]' });
+    assert.deepEqual(plain(event.returnValue), { ok: false });
+    env.ipcMain.emit('desktop:storage-write', event, 'tasks', '[]', null);
+    assert.equal(event.returnValue, false);
+  }
+  const own = env.event();
+  env.ipcMain.emit('desktop:storage-bootstrap', own, { tasks: 'original' });
+  assert.deepEqual(plain(own.returnValue), { ok: true, values: { tasks: 'original' }, recovered: false });
+  const other = env.event('schedule');
+  env.ipcMain.emit('desktop:storage-write', other, 'tasks', 'new', 'original');
+  assert.deepEqual(plain(other.returnValue), { ok: false, current: 'authoritative' });
+  env.ipcMain.emit('desktop:storage-ready', own);
+  env.ipcMain.emit('desktop:storage-write', other, 'tasks', 'new', 'original');
+  assert.equal(other.returnValue, true);
+});
+
+function preload({ values = {}, boot = { ok: true, values }, commit = true } = {}) {
   const ipcRenderer = new EventEmitter(), sent = [], invoked = [], documentEvents = new Map(), windowEvents = new Map();
   let bridge;
   ipcRenderer.send = (...args) => sent.push(args);
   ipcRenderer.invoke = (...args) => { invoked.push(args); return Promise.resolve(); };
+  const localStorage = { ...values };
+  Object.defineProperties(localStorage, {
+    getItem: { value: key => Object.hasOwn(localStorage, key) ? localStorage[key] : null },
+    setItem: { value: (key, value) => { localStorage[key] = value; }, configurable: true },
+    removeItem: { value: key => { delete localStorage[key]; } },
+  });
+  ipcRenderer.sendSync = (channel, ...args) => channel === 'desktop:storage-bootstrap' ? boot : channel === 'desktop:storage-ready' ? true : typeof commit === 'function' ? commit(...args, localStorage) : commit;
   vm.runInNewContext(fs.readFileSync(path.join(root, 'preload.cjs'), 'utf8'), {
     require: () => ({ ipcRenderer, contextBridge: { exposeInMainWorld(name, value) { assert.equal(name, 'desktopBridge'); bridge = value; } } }),
     document: { addEventListener: (name, callback) => documentEvents.set(name, callback) },
     window: { addEventListener: (name, callback) => windowEvents.set(name, callback) },
+    localStorage,
   });
-  return { ipcRenderer, sent, invoked, documentEvents, windowEvents, bridge };
+  return { ipcRenderer, sent, invoked, documentEvents, windowEvents, bridge, localStorage };
 }
+
+test('storage preload restores raw data before edits, honors tombstones, and fails closed', () => {
+  const restored = preload({ values: { tasks: 'old', deleted: 'old' }, boot: { ok: true, values: { tasks: 'new', deleted: null } } });
+  assert.equal(restored.localStorage.getItem('tasks'), 'new');
+  assert.equal(restored.localStorage.getItem('deleted'), null);
+  assert.equal(restored.bridge.isStorageReady(), true);
+  const failed = preload({ values: { tasks: 'original' }, boot: { ok: false } });
+  assert.equal(failed.bridge.writeStorage('tasks', '[]'), false);
+  assert.equal(failed.localStorage.getItem('tasks'), 'original');
+});
+
+test('storage preload rolls back failed snapshots without overwriting another window', () => {
+  const failed = preload({ values: { tasks: 'original' }, commit: false });
+  assert.equal(failed.bridge.writeStorage('tasks', 'new'), false);
+  assert.equal(failed.localStorage.getItem('tasks'), 'original');
+  const concurrent = preload({ values: { tasks: 'original' }, commit: (key, value, previous, storage) => { storage.setItem(key, 'other-window'); return false; } });
+  assert.equal(concurrent.bridge.writeStorage('tasks', 'new'), false);
+  assert.equal(concurrent.localStorage.getItem('tasks'), 'other-window');
+  const conflict = preload({ values: { tasks: 'original' }, commit: { ok: false, current: 'newer-committed' } });
+  assert.equal(conflict.bridge.writeStorage('tasks', 'attempted'), false);
+  assert.equal(conflict.localStorage.getItem('tasks'), 'newer-committed');
+  const quota = preload({ values: { tasks: 'original' }, commit: () => { throw new Error('Must not reach commit'); } });
+  Object.defineProperty(quota.localStorage, 'setItem', { value() { throw new Error('Quota'); } });
+  assert.equal(quota.bridge.writeStorage('tasks', 'new'), false);
+  assert.equal(quota.localStorage.getItem('tasks'), 'original');
+});
 
 test('preload exposes narrow IPC methods and removable subscriptions without Electron event objects', () => {
   const { ipcRenderer, sent, invoked, documentEvents, bridge } = preload();

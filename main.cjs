@@ -1,5 +1,8 @@
 const path = require('node:path');
 const { app, BrowserWindow, ipcMain, Menu, Tray, nativeImage, screen, shell } = require('electron');
+const { createStorageGuard } = require('./storage-guard.cjs');
+let storageGuard;
+const storageInitializers = new Set();
 
 let mainWindow;
 let scheduleWindow;
@@ -342,6 +345,7 @@ function createWindow(panel) {
   });
   if (panel === 'widget') mainWindow = win;
   else scheduleWindow = win;
+  const storageSender = win.webContents;
   win.setIgnoreMouseEvents(true, { forward: true });
 
   win.webContents.setWindowOpenHandler(({ url }) => {
@@ -351,6 +355,7 @@ function createWindow(panel) {
   // App renderers keep their preload bridge only on the bundled page.
   win.webContents.on('will-navigate', (event) => event.preventDefault());
   win.webContents.on('did-start-loading', () => {
+    storageInitializers.delete(storageSender);
     if (capturedPanel === panel) capturedPanel = null;
     if (panel === 'widget') lastWidgetBounds = null;
     else lastScheduleBounds = null;
@@ -363,6 +368,7 @@ function createWindow(panel) {
     syncWindowVisibility();
   });
   win.webContents.on('render-process-gone', () => {
+    storageInitializers.delete(storageSender);
     if (isQuitting || win.isDestroyed()) return;
     readyPanels.delete(panel);
     failedPanels.add(panel);
@@ -380,6 +386,7 @@ function createWindow(panel) {
     }
   });
   win.on('closed', () => {
+    storageInitializers.delete(storageSender);
     if (panel === 'widget') mainWindow = null;
     else scheduleWindow = null;
     if (panel === 'widget') lastWidgetBounds = null;
@@ -401,6 +408,31 @@ const hasSingleInstance = app.requestSingleInstanceLock();
 if (!hasSingleInstance) app.quit();
 else {
   app.on('second-instance', showWindow);
+
+  // Only our top-level bundled renderers may access the raw-data safeguard.
+  ipcMain.on('desktop:storage-bootstrap', (event, observed) => {
+    if (!ownsEvent(event) || !storageGuard) { event.returnValue = { ok: false }; return; }
+    try {
+      const values = storageGuard.bootstrap(observed);
+      const recovered = Object.entries(values).some(([key, value]) => (observed[key] ?? null) !== value);
+      storageInitializers.add(event.sender);
+      event.returnValue = { ok: true, values, recovered };
+    }
+    catch { event.returnValue = { ok: false }; }
+  });
+  ipcMain.on('desktop:storage-ready', (event) => {
+    if (ownsEvent(event)) storageInitializers.delete(event.sender);
+    event.returnValue = true;
+  });
+  ipcMain.on('desktop:storage-write', (event, key, value, previous) => {
+    if (!ownsEvent(event) || !storageGuard) { event.returnValue = false; return; }
+    try {
+      if (storageInitializers.size) { event.returnValue = { ok: false, current: storageGuard.read(key) }; return; }
+      storageGuard.write(key, value, previous); event.returnValue = true;
+    } catch (error) {
+      event.returnValue = error.code === 'STORAGE_CONFLICT' ? { ok: false, current: error.current } : false;
+    }
+  });
 
   ipcMain.handle('desktop:set-pin', (event, panel, enabled) => {
     const win = panelWindow(panel);
@@ -475,6 +507,7 @@ else {
   }
 
   app.whenReady().then(() => {
+    storageGuard = createStorageGuard(path.join(app.getPath('userData'), 'data-safety'));
     app.setAppUserModelId('com.lllleolin.taskboard');
     if (process.platform === 'darwin') app.dock?.hide();
     createTray();

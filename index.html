@@ -1884,6 +1884,21 @@
         font-weight: 650;
         color: var(--green);
       }
+      .schedule-heading {
+        min-width: 0;
+        line-height: 12px;
+      }
+      .schedule-week-range {
+        display: block;
+        margin-top: 2px;
+        color: var(--muted);
+        font-size: 9px;
+        font-weight: 400;
+        line-height: 11px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
       .schedule-lock {
         width: 25px;
         height: 25px;
@@ -2085,6 +2100,15 @@
       }
       .schedule-dialog .actions {
         margin-top: 15px;
+      }
+      .course-week-setting {
+        margin-top: 14px;
+        padding-bottom: 0;
+        font-size: 12px;
+        gap: 12px;
+      }
+      .course-week-setting .switch {
+        flex-shrink: 0;
       }
       @keyframes schedule-in {
         from {
@@ -2339,7 +2363,7 @@
         ><i class="schedule-resize-handle se" data-schedule-resize="se"></i
         ><i class="schedule-resize-handle sw" data-schedule-resize="sw"></i>
         <header class="schedule-head">
-          <span class="schedule-title">每周课表</span>
+          <div class="schedule-heading"><span class="schedule-title">每周课表</span><small class="schedule-week-range" id="schedule-week-range"></small></div>
           <div class="schedule-tools">
             <button
               class="icon-button schedule-lock"
@@ -2629,6 +2653,16 @@
                 ><select id="course-end" aria-label="结束时间"></select></div
             ></label>
           </div>
+          <div class="course-setting course-week-setting">
+            <div>
+              <span id="course-week-label">仅本周</span>
+              <small id="course-week-hint">开启后仅在本周显示，下周不再重复</small>
+              <small id="course-week-range"></small>
+            </div>
+            <button type="button" class="switch" id="course-week-only" role="switch"
+              aria-checked="false" aria-labelledby="course-week-label"
+              aria-describedby="course-week-hint course-week-range"></button>
+          </div>
           <div class="actions">
             <button
               type="button"
@@ -2772,6 +2806,8 @@
       let storageReadFailed = false;
       function readStorage(key) {
         try {
+          if (window.desktopBridge?.isStorageReady?.() === false)
+            throw new Error("Storage safeguard unavailable");
           return localStorage.getItem(key);
         } catch {
           storageReadFailed = true;
@@ -2785,7 +2821,11 @@
           return false;
         }
         try {
-          localStorage.setItem(key, value);
+          if (window.desktopBridge?.writeStorage) {
+            if (!window.desktopBridge.writeStorage(key, value))
+              throw new Error("Storage safeguard failed");
+          } else if (value === null) localStorage.removeItem(key);
+          else localStorage.setItem(key, value);
           return true;
         } catch {
           toast("本地保存失败，请释放存储空间后重试");
@@ -2964,6 +3004,12 @@
         "zh-TW": "主線 / 支線",
       };
       const lexicon = {
+        已从安全备份恢复本地数据: [
+          "Local data restored from a safety backup",
+          "安全なバックアップからローカルデータを復元しました",
+          "안전 백업에서 로컬 데이터를 복원했습니다",
+          "已從安全備份恢復本機資料",
+        ],
         任务操作: ["Task actions", "タスク操作", "작업 메뉴", "任務操作"],
         置顶任务: ["Pin task", "タスクを固定", "작업 고정", "置頂任務"],
         取消置顶任务: ["Unpin task", "タスクの固定を解除", "작업 고정 해제", "取消置頂任務"],
@@ -3248,6 +3294,13 @@
         结束时间: ["End time", "終了時刻", "종료 시간", "結束時間"],
         删除课程: ["Delete class", "授業を削除", "수업 삭제", "刪除課程"],
         每周课表: ["Weekly schedule", "週間時間割", "주간 시간표", "每週課表"],
+        仅本周: ["This week only", "今週のみ", "이번 주만", "僅本週"],
+        "开启后仅在本周显示，下周不再重复": [
+          "Show only this week; do not repeat next week",
+          "今週のみ表示し、来週は繰り返しません",
+          "이번 주에만 표시하고 다음 주에는 반복하지 않습니다",
+          "開啟後僅在本週顯示，下週不再重複",
+        ],
         添加或删除课程: [
           "Add or remove classes",
           "授業を追加・削除",
@@ -3768,7 +3821,7 @@
         const element = $(id);
         if (element.textContent !== value) element.textContent = value;
       }
-      let lastClockDay = "";
+      let lastClockDay = "", lastScheduleWeek = "";
       function updateClock() {
         const now = currentTime(),
           opts = { timeZone: settings.timezone },
@@ -3818,6 +3871,9 @@
             hour12: false,
           }).format(now),
         );
+        const week = scheduleWeekStart();
+        if (lastScheduleWeek && lastScheduleWeek !== week) drawSchedule();
+        lastScheduleWeek = week;
       }
       updateClock();
       setInterval(updateClock, 1000);
@@ -4673,7 +4729,7 @@
         applyLanguage();
         setLocked(false);
         widget.classList.remove("collapsed");
-        localStorage.removeItem(UI_KEY);
+        writeStorage(UI_KEY, null);
         syncCollapse();
         ["position", "left", "top", "width", "height", "margin"].forEach(
           (prop) => widget.style.removeProperty(prop),
@@ -4691,7 +4747,7 @@
         if (!pipRestore)
           writeStorage(SCHEDULE_LAYOUT_KEY, JSON.stringify(scheduleLayout));
         scheduleCollapsed = false;
-        localStorage.removeItem("minimal-task-widget-schedule-collapsed-v1");
+        writeStorage("minimal-task-widget-schedule-collapsed-v1", null);
         syncScheduleCollapse();
         setScheduleLocked(true);
         requestAnimationFrame(() => snapScheduleHome(false));
@@ -5294,7 +5350,27 @@
           courseEnd.value = String(start + 30);
       };
       let editingCourseId = null,
+        editingCourseWeekStart = "",
         suppressCourseClick = false;
+      function weekStartForDay(day) {
+        const date = new Date(day + "T12:00:00Z");
+        date.setUTCDate(date.getUTCDate() - (date.getUTCDay() + 6) % 7);
+        return date.toISOString().slice(0, 10);
+      }
+      function scheduleWeekStart() {
+        const day = ["day", "week"].includes(settings.periodMode)
+          ? settings.periodStart : currentZoneDay();
+        return weekStartForDay(day);
+      }
+      function courseWeekLabel(start) {
+        const end = new Date(start + "T12:00:00Z");
+        end.setUTCDate(end.getUTCDate() + 6);
+        return `${start} – ${end.toISOString().slice(0, 10)}`;
+      }
+      $("course-week-only").onclick = () => {
+        const toggle = $("course-week-only");
+        toggle.setAttribute("aria-checked", String(toggle.getAttribute("aria-checked") !== "true"));
+      };
       function saveCourses(next = courses) {
         if (!writeStorage(SCHEDULE_KEY, JSON.stringify(next))) return false;
         courses = next;
@@ -5302,6 +5378,10 @@
         return true;
       }
       function drawSchedule() {
+        const week = scheduleWeekStart();
+        lastScheduleWeek = week;
+        updateText("schedule-week-range", courseWeekLabel(week));
+        $("schedule-week-range").title = courseWeekLabel(week);
         scheduleGrid.innerHTML = "";
         const head = document.createElement("div");
         head.className = "schedule-grid-head";
@@ -5336,6 +5416,7 @@
           }
         }
         courses.forEach((course, index) => {
+          if (validDate(course.weekStart) && course.weekStart !== week) return;
           const start = Number(course.start),
             end = Number(course.end),
             first = Math.floor((start - startMin) / 30),
@@ -6128,6 +6209,10 @@
           : "添加课程";
         $("schedule-save").textContent = course ? "保存修改" : "添加课程";
         $("schedule-delete-current").hidden = !course;
+        editingCourseWeekStart = validDate(course?.weekStart)
+          ? course.weekStart : weekStartForDay(currentZoneDay());
+        $("course-week-only").setAttribute("aria-checked", String(validDate(course?.weekStart)));
+        updateText("course-week-range", courseWeekLabel(editingCourseWeekStart));
         if (course) {
           $("course-name").value = course.name || "";
           $("course-room").value = course.room || "";
@@ -6182,6 +6267,8 @@
           start,
           end,
         };
+        const weekOnly = $("course-week-only").getAttribute("aria-checked") === "true";
+        if (weekOnly) values.weekStart = editingCourseWeekStart;
         if (editingCourseId) {
           const course = courses.find(
             (course) => course.id === editingCourseId,
@@ -6191,6 +6278,7 @@
             toast("课程已删除");
             return;
           }
+          if (!weekOnly && validDate(course.weekStart)) values.weekStart = "";
           if (
             !saveCourses(
               courses.map((item) =>
@@ -6330,6 +6418,8 @@
       reportWidgetBounds();
       reportScheduleBounds();
       if (storageReadFailed) toast("本地数据读取失败，请重新打开后重试");
+      else if (window.desktopBridge?.storageRecovered)
+        toast("已从安全备份恢复本地数据");
     </script>
   </body>
 </html>
