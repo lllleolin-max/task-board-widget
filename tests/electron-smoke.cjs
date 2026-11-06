@@ -165,14 +165,13 @@ require(${JSON.stringify(path.join(appRoot, 'main.cjs'))});
 
     // Start floating, then use the real drag/snap path before locking. Loading
     // an already-docked layout skips the styles and pointer state at release.
-    await widget.evaluate(() => {
+    assert.equal(await widget.evaluate(() => {
       const key = 'minimal-task-widget-schedule-layout-v1';
       const main = document.getElementById('widget').getBoundingClientRect();
       const value = JSON.stringify({ floating: true, customSize: true, dockEdge: 'bottom',
         left: Math.max(8, main.left - 504), top: Math.min(innerHeight - 408, main.top + 100), width: 372, height: 400 });
-      localStorage.setItem(key, value);
-      window.dispatchEvent(new StorageEvent('storage', { key, newValue: value }));
-    });
+      return window.desktopBridge.writeStorage(key, value);
+    }), true, 'The floating-layout fixture must be acknowledged by the production storage API');
     await expect(schedule.locator('#app-stack')).toHaveClass(/schedule-floating/);
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()
       .find(win => win.webContents.getURL().includes('panel=schedule')).focus());

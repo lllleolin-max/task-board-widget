@@ -8,7 +8,7 @@ const SETTINGS = 'minimal-task-widget-settings-v1';
 const COURSES = 'minimal-task-widget-schedule-v1';
 const DRAFT = 'minimal-task-widget-draft-html-v1';
 const LAYOUT = 'minimal-task-widget-schedule-layout-v1';
-const saveFailure = /保存失败|无法.*保存|存储空间/;
+const saveFailure = /保存失败|保存未成功|无法.*保存|存储空间/;
 
 const test = base.extend({
   page: async ({ page }, use) => {
@@ -53,6 +53,30 @@ async function enableCourses(page) {
   await page.locator('#settings-close').click();
   await expect(page.locator('#schedule-card')).toBeVisible();
 }
+
+test('desktop initialization failure shows a persistent reload state while preserving saved records', async ({ page }) => {
+  const saved = JSON.stringify([{ id: 'preserved', type: 'side', title: '原始任务', items: [] }]);
+  await page.evaluate(({ key, saved }) => localStorage.setItem(key, saved), { key: TASKS, saved });
+  await page.addInitScript(() => {
+    window.desktopBridge = {
+      isStorageReady: () => window.name === 'retry-storage',
+      writeStorage: () => false,
+      onWidgetBounds() {},
+      getWidgetBounds: async () => null,
+      setLocale() {},
+      getPins: async () => ({ widget: false, schedule: false }),
+    };
+  });
+  await page.reload();
+  await expect(page.locator('#storage-recovery')).toBeVisible();
+  await expect(page.locator('#storage-recovery')).toContainText('原记录已保留');
+  expect(await raw(page, TASKS)).toBe(saved);
+  await page.evaluate(() => { window.name = 'retry-storage'; });
+  await page.getByRole('button', { name: '重新加载数据', exact: true }).click();
+  await expect(page.locator('#storage-recovery')).toHaveCount(0);
+  await expect(page.locator('.task-title')).toHaveText('原始任务');
+  expect(await raw(page, TASKS)).toBe(saved);
+});
 
 test('denied storage reads keep the UI usable without overwriting unread tasks', async ({ page }) => {
   const savedTasks = JSON.stringify([{ id: 'saved', type: 'side', title: '读取失败时保留的任务', items: [] }]);

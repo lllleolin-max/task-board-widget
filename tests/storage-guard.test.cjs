@@ -54,6 +54,20 @@ test('intentional empty collections and deleted keys remain empty after an old d
     { tasks: '[]', draft: null, courses: '[]' });
 });
 
+test('an unavailable browser cache can read existing raw data but cannot create an empty baseline', t => {
+  const dir = directory(t), guard = createStorageGuard(dir);
+  assert.throws(() => guard.bootstrap(null), /no saved snapshot/);
+  assert.deepEqual(fs.readdirSync(dir), []);
+  const raw = { tasks: ' [1,2]\n', courses: '[3]', draft: 'image and text' };
+  guard.bootstrap(raw);
+  const contents = fs.readFileSync(path.join(dir, 'current.json'));
+  assert.deepEqual(createStorageGuard(dir).bootstrap(null), raw);
+  const values = guard.values();
+  values.tasks = '[]';
+  assert.equal(guard.read('tasks'), raw.tasks, 'Readers cannot mutate the authoritative snapshot');
+  assert.deepEqual(fs.readFileSync(path.join(dir, 'current.json')), contents);
+});
+
 test('CAS rejects stale renderer writes and a later bootstrap cannot replace newer committed data', t => {
   const dir = directory(t), guard = createStorageGuard(dir);
   guard.bootstrap({ tasks: '[1]' });

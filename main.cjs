@@ -1,8 +1,22 @@
 const path = require('node:path');
+const fs = require('node:fs');
 const { app, BrowserWindow, ipcMain, Menu, Tray, nativeImage, screen, shell } = require('electron');
 const { createStorageGuard } = require('./storage-guard.cjs');
 let storageGuard;
-const storageInitializers = new Set();
+const storageUnavailable = new Set();
+
+// Bounded local diagnostics contain stages/codes only, never record contents.
+function logStorageError(stage, error) {
+  try {
+    const directory = path.join(app.getPath('userData'), 'data-safety');
+    const file = path.join(directory, 'events.log');
+    fs.mkdirSync(directory, { recursive: true });
+    if (fs.existsSync(file) && fs.statSync(file).size > 65536)
+      fs.renameSync(file, file + '.previous');
+    fs.appendFileSync(file, JSON.stringify({ at: new Date().toISOString(), stage,
+      code: typeof error?.code === 'string' ? error.code.slice(0, 80) : 'STORAGE_UNAVAILABLE' }) + '\n');
+  } catch { /* Diagnostics must not change save/restore behavior. */ }
+}
 
 let mainWindow;
 let scheduleWindow;
@@ -355,7 +369,6 @@ function createWindow(panel) {
   // App renderers keep their preload bridge only on the bundled page.
   win.webContents.on('will-navigate', (event) => event.preventDefault());
   win.webContents.on('did-start-loading', () => {
-    storageInitializers.delete(storageSender);
     if (capturedPanel === panel) capturedPanel = null;
     if (panel === 'widget') lastWidgetBounds = null;
     else lastScheduleBounds = null;
@@ -368,7 +381,6 @@ function createWindow(panel) {
     syncWindowVisibility();
   });
   win.webContents.on('render-process-gone', () => {
-    storageInitializers.delete(storageSender);
     if (isQuitting || win.isDestroyed()) return;
     readyPanels.delete(panel);
     failedPanels.add(panel);
@@ -386,7 +398,7 @@ function createWindow(panel) {
     }
   });
   win.on('closed', () => {
-    storageInitializers.delete(storageSender);
+    storageUnavailable.delete(storageSender);
     if (panel === 'widget') mainWindow = null;
     else scheduleWindow = null;
     if (panel === 'widget') lastWidgetBounds = null;
@@ -414,23 +426,53 @@ else {
     if (!ownsEvent(event) || !storageGuard) { event.returnValue = { ok: false }; return; }
     try {
       const values = storageGuard.bootstrap(observed);
-      const recovered = Object.entries(values).some(([key, value]) => (observed[key] ?? null) !== value);
-      storageInitializers.add(event.sender);
+      storageUnavailable.delete(event.sender);
+      const recovered = observed !== null && Object.entries(values).some(([key, value]) => (observed[key] ?? null) !== value);
       event.returnValue = { ok: true, values, recovered };
     }
-    catch { event.returnValue = { ok: false }; }
+    catch (error) {
+      storageUnavailable.add(event.sender);
+      logStorageError('bootstrap', error); event.returnValue = { ok: false };
+    }
   });
   ipcMain.on('desktop:storage-ready', (event) => {
-    if (ownsEvent(event)) storageInitializers.delete(event.sender);
-    event.returnValue = true;
+    try {
+      event.returnValue = ownsEvent(event) && storageGuard
+        ? { ok: true, values: storageGuard.values(), revision: storageGuard.status().revision } : { ok: false };
+    } catch (error) {
+      storageUnavailable.add(event.sender);
+      logStorageError('ready', error); event.returnValue = { ok: false };
+    }
   });
   ipcMain.on('desktop:storage-write', (event, key, value, previous) => {
     if (!ownsEvent(event) || !storageGuard) { event.returnValue = false; return; }
     try {
-      if (storageInitializers.size) { event.returnValue = { ok: false, current: storageGuard.read(key) }; return; }
-      storageGuard.write(key, value, previous); event.returnValue = true;
+      storageGuard.write(key, value, previous);
+      const revision = storageGuard.status().revision;
+      // Only acknowledged durable commits may update another panel's view.
+      for (const panel of panels) {
+        const target = panelWindow(panel)?.webContents;
+        if (target && target !== event.sender && !target.isDestroyed()) {
+          try { target.send('desktop:storage-changed', { key, value, revision }); }
+          catch (error) { logStorageError('notify', error); }
+        }
+      }
+      event.returnValue = { ok: true, revision };
     } catch (error) {
-      event.returnValue = error.code === 'STORAGE_CONFLICT' ? { ok: false, current: error.current } : false;
+      logStorageError('write', error);
+      event.returnValue = error.code === 'STORAGE_CONFLICT'
+        ? { ok: false, current: error.current, revision: storageGuard.status().revision } : false;
+    }
+  });
+  ipcMain.on('desktop:storage-cache-error', event => {
+    if (ownsEvent(event)) logStorageError('browser-cache', { code: 'CACHE_UNAVAILABLE' });
+  });
+  ipcMain.on('desktop:storage-reload', event => {
+    if (!ownsEvent(event)) return;
+    for (const panel of panels) {
+      const target = panelWindow(panel)?.webContents;
+      if (target && !target.isDestroyed() && (target === event.sender || storageUnavailable.has(target)))
+        target.reload();
     }
   });
 

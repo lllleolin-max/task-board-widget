@@ -111,8 +111,14 @@ function createStorageGuard(directory, io = fs) {
   }
 
   function bootstrap(observedRaw) {
-    const observed = valuesCopy(observedRaw, false);
     if (!snapshot) load();
+    // A temporarily unavailable browser cache must not prevent reading an
+    // existing acknowledged snapshot, or initialize a new empty snapshot.
+    if (observedRaw === null) {
+      if (!snapshot) throw new Error('Browser storage unavailable and no saved snapshot');
+      return { ...snapshot.values };
+    }
+    const observed = valuesCopy(observedRaw, false);
     if (!snapshot) commit(observed);
     else {
       const differs = Object.entries(snapshot.values).some(([key, value]) =>
@@ -146,6 +152,10 @@ function createStorageGuard(directory, io = fs) {
   return {
     bootstrap,
     write,
+    values: () => {
+      if (!snapshot) throw new Error('Storage must be initialized before reading');
+      return { ...snapshot.values };
+    },
     read: key => {
       if (!snapshot) throw new Error('Storage must be initialized before reading');
       if (typeof key !== 'string') throw new Error('Invalid storage key');

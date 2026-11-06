@@ -19,6 +19,12 @@ async function verify(executable, expectedFile, outputFile) {
     await widget.waitForFunction(() => !!window.desktopBridge);
     assert.equal(await widget.evaluate(() => window.desktopBridge.isStorageReady()), true, 'Storage safeguard must initialize successfully');
     const actual = await widget.evaluate(() => Object.fromEntries(Object.keys(localStorage).map(key => [key, localStorage.getItem(key)])));
+    for (const page of app.windows()) {
+      assert.equal(await page.evaluate(() => window.desktopBridge.isStorageReady()), true);
+      const acknowledged = await page.evaluate(keys => Object.fromEntries(keys.map(key =>
+        [key, window.desktopBridge.readStorage(key)])), Object.keys(actual));
+      assert.deepEqual(acknowledged, actual, 'Both panels must read the same acknowledged raw data as the browser mirror');
+    }
     for (const [key, value] of Object.entries(expected)) {
       if (actual[key] === value) continue;
       // Following the system date is the only accepted automatic setting change.

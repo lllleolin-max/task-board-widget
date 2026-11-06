@@ -1008,6 +1008,19 @@
       }
       .task-menu button[data-task-action="delete"] { color: var(--red); }
       .task-menu svg { width: 15px; height: 15px; flex: none; }
+      #storage-recovery {
+        position: absolute;
+        inset: 0;
+        z-index: 1000;
+        background: var(--paper);
+        color: var(--ink);
+        padding: 20px;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        gap: 12px;
+        border-radius: inherit;
+      }
       .toast {
         position: fixed;
         bottom: 18px;
@@ -2808,6 +2821,8 @@
         try {
           if (window.desktopBridge?.isStorageReady?.() === false)
             throw new Error("Storage safeguard unavailable");
+          if (window.desktopBridge?.readStorage)
+            return window.desktopBridge.readStorage(key);
           return localStorage.getItem(key);
         } catch {
           storageReadFailed = true;
@@ -2828,7 +2843,9 @@
           else localStorage.setItem(key, value);
           return true;
         } catch {
-          toast("本地保存失败，请释放存储空间后重试");
+          toast(window.desktopBridge
+            ? "保存未成功，请重试；原记录已保留"
+            : "本地保存失败，请释放存储空间后重试");
           return false;
         }
       }
@@ -3004,6 +3021,19 @@
         "zh-TW": "主線 / 支線",
       };
       const lexicon = {
+        "数据暂时无法读取，原记录已保留。请重试加载。": [
+          "Saved data is temporarily unavailable and has been retained. Retry loading.",
+          "保存データを一時的に読み込めません。データは保持されています。再読み込みしてください。",
+          "저장된 데이터를 일시적으로 읽을 수 없습니다. 데이터는 보존되어 있습니다. 다시 불러오세요.",
+          "資料暫時無法讀取，原記錄已保留。請重試載入。",
+        ],
+        重新加载数据: ["Reload saved data", "保存データを再読み込み", "저장 데이터 다시 불러오기", "重新載入資料"],
+        "保存未成功，请重试；原记录已保留": [
+          "Could not save. Retry; your previous records have been retained.",
+          "保存できませんでした。以前のデータは保持されています。再試行してください。",
+          "저장하지 못했습니다. 이전 기록은 보존되어 있습니다. 다시 시도하세요.",
+          "儲存未成功，請重試；原記錄已保留",
+        ],
         已从安全备份恢复本地数据: [
           "Local data restored from a safety backup",
           "安全なバックアップからローカルデータを復元しました",
@@ -3833,10 +3863,13 @@
           settings.followSystemDate !== false
         ) {
           if (settings.periodStart !== today || settings.periodEnd !== today) {
-            settings.periodStart = today;
-            settings.periodEnd = today;
-            writeStorage(SETTINGS_KEY, JSON.stringify(settings));
-            refreshTasks = true;
+            const next = { ...settings, periodStart: today, periodEnd: today };
+            // One desktop writer follows the date. A failed commit is retried
+            // on the next clock tick rather than marked successful in memory.
+            if ((desktopPanel === "schedule" && window.desktopBridge?.onStorageChanged) || saveSettings(next)) {
+              settings = next;
+              refreshTasks = true;
+            }
           }
         }
         if (refreshTasks) render();
@@ -6354,7 +6387,7 @@
           showDraft();
       }
       onDocument("keydown", handleGlobalKeydown);
-      window.addEventListener("storage", (event) => {
+      function handleStorageChange(event) {
         try {
           if (event.key === KEY) {
             tasks = normalizeTasks(JSON.parse(event.newValue));
@@ -6413,11 +6446,35 @@
         } catch {
           /* Ignore a malformed update and retain the current view. */
         }
-      });
+      }
+      if (window.desktopBridge?.onStorageChanged)
+        window.desktopBridge.onStorageChanged(handleStorageChange);
+      else window.addEventListener("storage", handleStorageChange);
       applyLanguage();
       reportWidgetBounds();
       reportScheduleBounds();
-      if (storageReadFailed) toast("本地数据读取失败，请重新打开后重试");
+      if (storageReadFailed) {
+        toast("本地数据读取失败，请重新打开后重试");
+        if (window.desktopBridge) {
+          // A failed read is an unavailable state, never an empty task board.
+          const card = desktopPanel === "schedule" ? scheduleCard : widget,
+            notice = document.createElement("div"),
+            message = document.createElement("p"),
+            retry = document.createElement("button");
+          notice.id = "storage-recovery";
+          notice.setAttribute("role", "alert");
+          message.textContent = tr("数据暂时无法读取，原记录已保留。请重试加载。");
+          retry.textContent = tr("重新加载数据");
+          retry.addEventListener("click", () => {
+            if (window.desktopBridge.reloadStorage) window.desktopBridge.reloadStorage();
+            else window.location.reload();
+          });
+          notice.append(message, retry);
+          card.append(notice);
+          reportWidgetBounds();
+          reportScheduleBounds();
+        }
+      }
       else if (window.desktopBridge?.storageRecovered)
         toast("已从安全备份恢复本地数据");
     </script>

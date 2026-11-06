@@ -91,7 +91,7 @@ async function desktop({ lock = true, platform = 'darwin', packaged = true, floa
   };
   vm.runInNewContext(fs.readFileSync(path.join(root, 'main.cjs'), 'utf8'), {
     require: (name) => name === 'electron' ? electron : name === './storage-guard.cjs' ? {
-      createStorageGuard: () => ({ bootstrap: value => value, write() {}, read: () => 'authoritative' }),
+      createStorageGuard: () => ({ bootstrap: value => value, write() {}, read: () => 'authoritative', values: () => ({}), status: () => ({ revision: 1 }) }),
     } : name === './windows-desktop.cjs' ? {
       foregroundContext: () => foregroundContext,
       isTopmost: win => win.nativeTopmost,
@@ -1151,24 +1151,30 @@ test('raw storage IPC rejects foreign windows and subframes', async () => {
   assert.deepEqual(plain(own.returnValue), { ok: true, values: { tasks: 'original' }, recovered: false });
   const other = env.event('schedule');
   env.ipcMain.emit('desktop:storage-write', other, 'tasks', 'new', 'original');
-  assert.deepEqual(plain(other.returnValue), { ok: false, current: 'authoritative' });
+  assert.deepEqual(plain(other.returnValue), { ok: true, revision: 1 }, 'An initializing cache must not block durable writes');
+  assert.deepEqual(env.windows[0].webContents.messages.at(-1), ['desktop:storage-changed', { key: 'tasks', value: 'new', revision: 1 }]);
   env.ipcMain.emit('desktop:storage-ready', own);
+  assert.deepEqual(plain(own.returnValue), { ok: true, values: {}, revision: 1 });
   env.ipcMain.emit('desktop:storage-write', other, 'tasks', 'new', 'original');
-  assert.equal(other.returnValue, true);
+  assert.deepEqual(plain(other.returnValue), { ok: true, revision: 1 });
+  env.ipcMain.emit('desktop:storage-reload', { sender: {}, senderFrame: {} });
+  assert.equal(env.windows[0].webContents.reloads, undefined);
+  env.ipcMain.emit('desktop:storage-reload', env.event());
+  assert.equal(env.windows[0].webContents.reloads, 1);
 });
 
-function preload({ values = {}, boot = { ok: true, values }, commit = true } = {}) {
+function preload({ values = {}, boot = { ok: true, values }, latest = boot, commit = { ok: true, revision: 1 }, cacheDenied = false } = {}) {
   const ipcRenderer = new EventEmitter(), sent = [], invoked = [], documentEvents = new Map(), windowEvents = new Map();
   let bridge;
   ipcRenderer.send = (...args) => sent.push(args);
   ipcRenderer.invoke = (...args) => { invoked.push(args); return Promise.resolve(); };
   const localStorage = { ...values };
   Object.defineProperties(localStorage, {
-    getItem: { value: key => Object.hasOwn(localStorage, key) ? localStorage[key] : null },
-    setItem: { value: (key, value) => { localStorage[key] = value; }, configurable: true },
+    getItem: { value: key => { if (cacheDenied) throw new Error('Cache denied'); return Object.hasOwn(localStorage, key) ? localStorage[key] : null; } },
+    setItem: { value: (key, value) => { if (cacheDenied) throw new Error('Cache denied'); localStorage[key] = value; }, configurable: true },
     removeItem: { value: key => { delete localStorage[key]; } },
   });
-  ipcRenderer.sendSync = (channel, ...args) => channel === 'desktop:storage-bootstrap' ? boot : channel === 'desktop:storage-ready' ? true : typeof commit === 'function' ? commit(...args, localStorage) : commit;
+  ipcRenderer.sendSync = (channel, ...args) => channel === 'desktop:storage-bootstrap' ? boot : channel === 'desktop:storage-ready' ? latest : typeof commit === 'function' ? commit(...args, localStorage) : commit;
   vm.runInNewContext(fs.readFileSync(path.join(root, 'preload.cjs'), 'utf8'), {
     require: () => ({ ipcRenderer, contextBridge: { exposeInMainWorld(name, value) { assert.equal(name, 'desktopBridge'); bridge = value; } } }),
     document: { addEventListener: (name, callback) => documentEvents.set(name, callback) },
@@ -1188,20 +1194,51 @@ test('storage preload restores raw data before edits, honors tombstones, and fai
   assert.equal(failed.localStorage.getItem('tasks'), 'original');
 });
 
-test('storage preload rolls back failed snapshots without overwriting another window', () => {
+test('storage preload publishes only acknowledged commits and recovers conflicts', async () => {
   const failed = preload({ values: { tasks: 'original' }, commit: false });
   assert.equal(failed.bridge.writeStorage('tasks', 'new'), false);
   assert.equal(failed.localStorage.getItem('tasks'), 'original');
+  assert.equal(failed.bridge.readStorage('tasks'), 'original');
   const concurrent = preload({ values: { tasks: 'original' }, commit: (key, value, previous, storage) => { storage.setItem(key, 'other-window'); return false; } });
   assert.equal(concurrent.bridge.writeStorage('tasks', 'new'), false);
   assert.equal(concurrent.localStorage.getItem('tasks'), 'other-window');
+  assert.equal(concurrent.bridge.readStorage('tasks'), 'original', 'Unacknowledged cache mutations are not records');
   const conflict = preload({ values: { tasks: 'original' }, commit: { ok: false, current: 'newer-committed' } });
+  const changes = [];
+  conflict.bridge.onStorageChanged(change => changes.push(plain(change)));
   assert.equal(conflict.bridge.writeStorage('tasks', 'attempted'), false);
   assert.equal(conflict.localStorage.getItem('tasks'), 'newer-committed');
-  const quota = preload({ values: { tasks: 'original' }, commit: () => { throw new Error('Must not reach commit'); } });
+  assert.equal(conflict.bridge.readStorage('tasks'), 'newer-committed');
+  await Promise.resolve();
+  assert.deepEqual(changes, [{ key: 'tasks', newValue: 'newer-committed' }]);
+  const quota = preload({ values: { tasks: 'original' } });
   Object.defineProperty(quota.localStorage, 'setItem', { value() { throw new Error('Quota'); } });
-  assert.equal(quota.bridge.writeStorage('tasks', 'new'), false);
+  assert.equal(quota.bridge.writeStorage('tasks', 'new'), true);
+  assert.equal(quota.bridge.readStorage('tasks'), 'new', 'A durable commit remains readable when its browser mirror is full');
   assert.equal(quota.localStorage.getItem('tasks'), 'original');
+});
+
+test('storage preload reads saved data despite an unavailable cache and observes newer startup commits', () => {
+  const denied = preload({ values: { tasks: 'old' }, cacheDenied: true, boot: { ok: true, values: { tasks: 'saved' } } });
+  assert.equal(denied.bridge.isStorageReady(), true);
+  assert.equal(denied.bridge.readStorage('tasks'), 'saved');
+  assert.equal(denied.bridge.writeStorage('tasks', 'new'), true);
+  assert.equal(denied.bridge.readStorage('tasks'), 'new');
+  const racing = preload({ values: { tasks: 'old' }, latest: { ok: true, values: { tasks: 'newer' } } });
+  assert.equal(racing.bridge.readStorage('tasks'), 'newer');
+  const changes = [];
+  const unsubscribe = racing.bridge.onStorageChanged(change => changes.push(plain(change)));
+  racing.ipcRenderer.emit('desktop:storage-changed', {}, { key: 'tasks', value: 'committed' });
+  assert.equal(racing.bridge.readStorage('tasks'), 'committed');
+  assert.deepEqual(changes, [{ key: 'tasks', newValue: 'committed' }]);
+  unsubscribe();
+  racing.ipcRenderer.emit('desktop:storage-changed', {}, { key: 'tasks', value: '[]' });
+  assert.equal(changes.length, 1);
+  racing.ipcRenderer.emit('desktop:storage-changed', {}, { key: 'tasks', value: 'newest', revision: 5 });
+  racing.ipcRenderer.emit('desktop:storage-changed', {}, { key: 'tasks', value: 'stale', revision: 4 });
+  assert.equal(racing.bridge.readStorage('tasks'), 'newest', 'Delayed messages cannot roll back a key');
+  racing.ipcRenderer.emit('desktop:storage-changed', {}, { key: 'draft', value: 'other key', revision: 4 });
+  assert.equal(racing.bridge.readStorage('draft'), 'other key', 'Revision checks are per key so independent writes are not dropped');
 });
 
 test('preload exposes narrow IPC methods and removable subscriptions without Electron event objects', () => {

@@ -53,7 +53,7 @@ require(${JSON.stringify(path.join(appRoot, 'main.cjs'))});
   const snapshot = page => page.evaluate(() => Object.fromEntries(
     Object.keys(localStorage).map(key => [key, localStorage.getItem(key)]),
   ));
-  async function launch() {
+  async function launch(ready = true) {
     app = await _electron.launch({ executablePath: require('electron'), args: [entry], cwd: root, env, timeout: 30000 });
     await expect.poll(() => app.windows().length).toBe(2);
     widget = app.windows().find(page => page.url().includes('panel=widget'));
@@ -65,7 +65,7 @@ require(${JSON.stringify(path.join(appRoot, 'main.cjs'))});
     for (const page of [widget, schedule]) {
       page.on('pageerror', error => errors.push(error.message));
       await page.waitForFunction(() => !!window.desktopBridge);
-      assert.equal(await page.evaluate(() => window.desktopBridge.isStorageReady()), true,
+      assert.equal(await page.evaluate(() => window.desktopBridge.isStorageReady()), ready,
         `Storage bootstrap must succeed in ${new URL(page.url()).searchParams.get('panel')}`);
       await page.waitForFunction(() => document.getElementById('schedule-grid').children.length > 0);
     }
@@ -157,6 +157,24 @@ require(${JSON.stringify(path.join(appRoot, 'main.cjs'))});
     assert.equal(expected[KEYS.unknown], '  {"revision":2,"nested":[null,"原样保留"]}\n');
     assert.ok(!Object.hasOwn(expected, KEYS.removed));
     await checkContent(expected);
+    // Queued/transient browser events must not replace acknowledged records.
+    // The disk snapshot and actual browser values are still complete here.
+    for (const panel of [widget, schedule]) await panel.evaluate(keys => {
+      for (const key of [keys.tasks, keys.courses])
+        window.dispatchEvent(new StorageEvent('storage', { key, newValue: '[]', storageArea: localStorage }));
+    }, KEYS);
+    await checkContent(expected);
+    // Lose the browser cache during a running session, then acknowledge a
+    // write from the other panel. Both views must stay populated throughout.
+    await widget.evaluate(() => localStorage.clear());
+    await write(KEYS.tasks, expected[KEYS.tasks], schedule);
+    await expect(widget.locator('.task[data-id="history"] .task-title')).toHaveText('完整的历史任务');
+    await expect(schedule.locator('.schedule-course')).toHaveCount(2);
+    for (const page of [widget, schedule]) {
+      assert.equal(await page.evaluate(key => window.desktopBridge.readStorage(key), KEYS.courses), expected[KEYS.courses]);
+    }
+    await reloadPanels();
+    await checkContent(expected);
     await close();
     assert.ok((await fs.readdir(isolated(path.join(profile, 'data-safety')))).length > 0,
       'Independent durable snapshots must exist before simulating a database rollback');
@@ -179,9 +197,49 @@ require(${JSON.stringify(path.join(appRoot, 'main.cjs'))});
     await close();
     await launch();
     await checkContent(expected);
+    await close();
+    // A real startup read failure must present a usable recovery action in
+    // both native windows; reload after repairing the isolated snapshots.
+    const safety = path.join(profile, 'data-safety');
+    const intact = await Promise.all(['current.json', 'previous.json'].map(name => fs.readFile(isolated(path.join(safety, name)))));
+    for (const name of ['current.json', 'previous.json'])
+      await fs.writeFile(isolated(path.join(safety, name)), '{broken snapshot');
+    await launch(false);
+    await expect(widget.locator('#storage-recovery')).toBeVisible();
+    for (const [index, name] of ['current.json', 'previous.json'].entries())
+      await fs.writeFile(isolated(path.join(safety, name)), intact[index]);
+    await widget.getByRole('button', { name: '重新加载数据', exact: true }).click();
+    await widget.waitForFunction(() => window.desktopBridge?.isStorageReady());
+    await schedule.waitForFunction(() => window.desktopBridge?.isStorageReady());
+    await expect(widget.locator('#storage-recovery')).toHaveCount(0);
+    await expect(schedule.locator('#storage-recovery')).toHaveCount(0);
+    await checkContent(expected);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await Promise.all([widget.reload(), schedule.reload()]);
+      for (const page of [widget, schedule])
+        await page.waitForFunction(() => window.desktopBridge?.isStorageReady());
+      await checkContent(expected);
+    }
+    // Cross midnight and then skip two days (as after sleep/backgrounding),
+    // without restarting the app. Only the widget persists the shared date.
+    // Playwright's clock is shared by pages in the Electron browser context.
+    await widget.clock.install({ time: new Date('2026-09-20T15:59:59Z') });
+    await reloadPanels();
+    await write(KEYS.settings, encode({ ...settings, followSystemDate: true }));
+    await reloadPanels();
+    await widget.clock.fastForward(2000);
+    await expect.poll(() => widget.evaluate(key => JSON.parse(window.desktopBridge.readStorage(key)).periodStart, KEYS.settings)).toBe('2026-09-21');
+    await widget.clock.fastForward(48 * 60 * 60 * 1000);
+    await expect.poll(() => widget.evaluate(key => JSON.parse(window.desktopBridge.readStorage(key)).periodStart, KEYS.settings)).toBe('2026-09-23');
+    await expect(widget.locator('.task[data-id="added-later"] .task-title')).toHaveText('较新任务');
+    await expect(schedule.locator('.schedule-course')).toHaveCount(2);
+    for (const page of [widget, schedule]) {
+      assert.equal(await page.evaluate(key => window.desktopBridge.readStorage(key), KEYS.tasks), expected[KEYS.tasks]);
+      assert.equal(await page.evaluate(key => window.desktopBridge.readStorage(key), KEYS.courses), expected[KEYS.courses]);
+    }
     assert.deepEqual(errors, [], 'No renderer errors during snapshot recovery');
     passed = true;
-    console.log('Electron storage passed: isolated userData/sessionData, acknowledged writes from both panels, stale and missing Local Storage recovery, exact raw keys, history/images/drafts/unknown fields, and no resurrection of legitimate deletions after repeated restarts.');
+    console.log('Electron storage passed: isolated userData/sessionData, acknowledged writes from both panels, rejected stale/empty cache events, live cache loss, concurrent reloads, midnight and multi-day clock jumps, stale/missing database recovery, exact raw history/images/drafts/unknown fields, and no resurrection of legitimate deletions.');
   } finally {
     await close();
     if (passed && path.dirname(temporary) === path.resolve(os.tmpdir()) && path.basename(temporary).startsWith('taskboard-storage-')) {
