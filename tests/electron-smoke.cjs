@@ -91,7 +91,7 @@ require(${JSON.stringify(path.join(appRoot, 'main.cjs'))});
 
     // A locked, docked schedule still moves when the main panel is dragged.
     // Read the real Win32 region: DOM visibility misses native clipping.
-    const nativeRegions = (box) => app.evaluate(({ BrowserWindow, screen }, box) => {
+    const nativeRegions = (box, targetPanel = 'schedule') => app.evaluate(({ BrowserWindow, screen }, { box, targetPanel }) => {
       const koffi = globalThis.taskboardTestRequire('koffi');
       const user32 = koffi.load('user32.dll'), gdi32 = koffi.load('gdi32.dll');
       const create = gdi32.func('uintptr_t __stdcall CreateRectRgn(int left, int top, int right, int bottom)');
@@ -105,14 +105,38 @@ require(${JSON.stringify(path.join(appRoot, 'main.cjs'))});
           const kind = get(win.getNativeWindowHandle().readBigUInt64LE(), region);
           const scale = screen.getDisplayMatching(win.getBounds()).scaleFactor;
           const client = win.getContentBounds();
-          const covered = panel !== 'schedule' || !box || (
+          const covered = panel !== targetPanel || !box || (
             box.x >= 0 && box.y >= 0 && box.x + box.width <= client.width && box.y + box.height <= client.height &&
             [8, box.width / 2, box.width - 8].every(x =>
               [8, box.height / 2, box.height - 8].every(y => contains(region, Math.round((box.x + x) * scale), Math.round((box.y + y) * scale)))));
           return { panel, kind, covered: !!covered };
         } finally { release(region); }
       });
-    }, box);
+    }, { box, targetPanel });
+
+    // Menus can extend outside the card and above a pinned sibling panel.
+    // Check the native region as well as the renderer's simulated clicks.
+    await schedule.locator('#schedule-pin-toggle').click();
+    const smokeTask = widget.locator('.task').filter({ hasText: 'Electron smoke task' });
+    await smokeTask.locator('.task-title').click({ button: 'right' });
+    await expect(widget.locator('#task-menu')).toBeVisible();
+    await expect.poll(() => widget.evaluate(() => window.desktopBridge.getWidgetBounds().then(bounds => bounds.modal))).toBe(true);
+    if (process.platform === 'win32')
+      await expect.poll(() => nativeRegions(null).then(windows => windows.find(win => win.panel === 'widget').kind)).toBe(0);
+    await widget.locator('[data-task-action="pin"]').click();
+    await expect(smokeTask).toHaveClass(/pinned/);
+    await expect(schedule.locator('.task').filter({ hasText: 'Electron smoke task' })).toHaveClass(/pinned/);
+    await smokeTask.locator('.task-title').click({ button: 'right' });
+    await widget.locator('[data-task-action="delete"]').click();
+    await expect(schedule.locator('.task-title').filter({ hasText: 'Electron smoke task' })).toHaveCount(0);
+    await expect.poll(() => widget.evaluate(() => window.desktopBridge.getWidgetBounds().then(bounds => bounds.modal))).toBe(false);
+    if (process.platform === 'win32')
+      await expect.poll(async () => nativeRegions(await widget.locator('#task-undo').boundingBox(), 'widget')
+        .then(windows => windows.find(win => win.panel === 'widget').covered)).toBe(true);
+    await widget.locator('#task-undo').click();
+    await expect(smokeTask).toHaveClass(/pinned/);
+    assert.deepEqual(await widget.evaluate(() => window.desktopBridge.getPins()), { widget: false, schedule: true });
+    await schedule.locator('#schedule-pin-toggle').click();
     await expect(schedule.locator('#schedule-lock-toggle')).toHaveAttribute('aria-pressed', 'true');
     await widget.locator('#widget .top').hover({ position: { x: 15, y: 30 } });
     const dockedBefore = await schedule.locator('#schedule-card').boundingBox();
@@ -141,14 +165,13 @@ require(${JSON.stringify(path.join(appRoot, 'main.cjs'))});
 
     // Start floating, then use the real drag/snap path before locking. Loading
     // an already-docked layout skips the styles and pointer state at release.
-    await widget.evaluate(() => {
+    assert.equal(await widget.evaluate(() => {
       const key = 'minimal-task-widget-schedule-layout-v1';
       const main = document.getElementById('widget').getBoundingClientRect();
       const value = JSON.stringify({ floating: true, customSize: true, dockEdge: 'bottom',
         left: Math.max(8, main.left - 504), top: Math.min(innerHeight - 408, main.top + 100), width: 372, height: 400 });
-      localStorage.setItem(key, value);
-      window.dispatchEvent(new StorageEvent('storage', { key, newValue: value }));
-    });
+      return window.desktopBridge.writeStorage(key, value);
+    }), true, 'The floating-layout fixture must be acknowledged by the production storage API');
     await expect(schedule.locator('#app-stack')).toHaveClass(/schedule-floating/);
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()
       .find(win => win.webContents.getURL().includes('panel=schedule')).focus());

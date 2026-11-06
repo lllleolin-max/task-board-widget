@@ -21,7 +21,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         env:
           RELEASE_TAG: ${{ github.ref_name }}
-        run: node -e "const v = require('./package.json').version; if (process.env.RELEASE_TAG !== 'v' + v) throw new Error('Release tag must equal v' + v)"
+        run: node -e "const v = require('./package.json').version; if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(v) || process.env.RELEASE_TAG !== 'v' + v) throw new Error('Release tag must match the stable package version vX.Y.Z')"
 
   windows:
     needs: [verify, version]

@@ -1,5 +1,22 @@
 const path = require('node:path');
+const fs = require('node:fs');
 const { app, BrowserWindow, ipcMain, Menu, Tray, nativeImage, screen, shell } = require('electron');
+const { createStorageGuard } = require('./storage-guard.cjs');
+let storageGuard;
+const storageUnavailable = new Set();
+
+// Bounded local diagnostics contain stages/codes only, never record contents.
+function logStorageError(stage, error) {
+  try {
+    const directory = path.join(app.getPath('userData'), 'data-safety');
+    const file = path.join(directory, 'events.log');
+    fs.mkdirSync(directory, { recursive: true });
+    if (fs.existsSync(file) && fs.statSync(file).size > 65536)
+      fs.renameSync(file, file + '.previous');
+    fs.appendFileSync(file, JSON.stringify({ at: new Date().toISOString(), stage,
+      code: typeof error?.code === 'string' ? error.code.slice(0, 80) : 'STORAGE_UNAVAILABLE' }) + '\n');
+  } catch { /* Diagnostics must not change save/restore behavior. */ }
+}
 
 let mainWindow;
 let scheduleWindow;
@@ -59,8 +76,8 @@ function showWindow() {
   }
   syncWindowVisibility();
   if (isVisible(mainWindow)) mainWindow.focus();
-  if (nativeHitTesting) {
-    syncDesktopStacking();
+  if (nativeHitTesting) syncDesktopStacking();
+  if (nativeHitTesting || process.platform === 'darwin') {
     const modal = panelWindow(modalPanel);
     if (isVisible(modal)) modal.moveTop();
   }
@@ -159,6 +176,25 @@ function syncNativeTopmost() {
   if (raised && isVisible(modal) && modal.isAlwaysOnTop()) modal.moveTop();
 }
 
+function syncMacModalStacking() {
+  const bounds = { widget: lastWidgetBounds, schedule: lastScheduleBounds };
+  const modal = windowsShown && !isQuitting
+    ? panels.find(name => bounds[name]?.modal && isVisible(panelWindow(name))) || null : null;
+  let changed = modal !== modalPanel;
+  modalPanel = modal;
+  for (const panel of panels) {
+    const win = panelWindow(panel);
+    if (!win || win.isDestroyed()) continue;
+    const modalBoost = modal === panel && panels.some(name => name !== panel && pinned[name] && isVisible(panelWindow(name)));
+    const wanted = pinned[panel] || modalBoost;
+    if (win.isAlwaysOnTop() === wanted) continue;
+    win.setAlwaysOnTop(wanted, 'floating');
+    changed = true;
+  }
+  // Reorder within the same level as a pinned sibling; user Pins stay separate.
+  if (changed && modal) panelWindow(modal).moveTop();
+}
+
 function createTray() {
   const icon = nativeImage.createFromPath(path.join(__dirname, 'build', 'icon.png'));
   tray = new Tray(icon);
@@ -200,7 +236,10 @@ function setInteractivePanel(panel) {
   }
   interactivePanel = panel;
   const active = panelWindow(panel);
-  if (active && !active.isDestroyed() && active.isVisible()) active.showInactive();
+  if (isVisible(active) && (process.platform !== 'darwin' || active.isAlwaysOnTop() ||
+      panels.some(name => { const win = panelWindow(name); return isVisible(win) && win.isFocused(); }))) {
+    active.showInactive();
+  }
 }
 
 function routePointerToPanel() {
@@ -208,6 +247,7 @@ function routePointerToPanel() {
     updateInputRegions();
     return;
   }
+  if (process.platform === 'darwin') syncMacModalStacking();
   if (isQuitting || (!isVisible(mainWindow) && !isVisible(scheduleWindow))) {
     setInteractivePanel(null);
     return;
@@ -299,6 +339,7 @@ function createWindow(panel) {
     // ignoring its simple card-shaped region, and stops the sibling's frames.
     // Tool windows are excluded as occluders; ordinary apps still occlude us.
     ...(nativeHitTesting ? { type: 'toolbar' } : {}),
+    ...(process.platform === 'darwin' ? { acceptFirstMouse: true } : {}),
     transparent: true,
     backgroundColor: '#00000000',
     hasShadow: false,
@@ -318,6 +359,7 @@ function createWindow(panel) {
   });
   if (panel === 'widget') mainWindow = win;
   else scheduleWindow = win;
+  const storageSender = win.webContents;
   win.setIgnoreMouseEvents(true, { forward: true });
 
   win.webContents.setWindowOpenHandler(({ url }) => {
@@ -356,6 +398,7 @@ function createWindow(panel) {
     }
   });
   win.on('closed', () => {
+    storageUnavailable.delete(storageSender);
     if (panel === 'widget') mainWindow = null;
     else scheduleWindow = null;
     if (panel === 'widget') lastWidgetBounds = null;
@@ -378,6 +421,61 @@ if (!hasSingleInstance) app.quit();
 else {
   app.on('second-instance', showWindow);
 
+  // Only our top-level bundled renderers may access the raw-data safeguard.
+  ipcMain.on('desktop:storage-bootstrap', (event, observed) => {
+    if (!ownsEvent(event) || !storageGuard) { event.returnValue = { ok: false }; return; }
+    try {
+      const values = storageGuard.bootstrap(observed);
+      storageUnavailable.delete(event.sender);
+      const recovered = observed !== null && Object.entries(values).some(([key, value]) => (observed[key] ?? null) !== value);
+      event.returnValue = { ok: true, values, recovered };
+    }
+    catch (error) {
+      storageUnavailable.add(event.sender);
+      logStorageError('bootstrap', error); event.returnValue = { ok: false };
+    }
+  });
+  ipcMain.on('desktop:storage-ready', (event) => {
+    try {
+      event.returnValue = ownsEvent(event) && storageGuard
+        ? { ok: true, values: storageGuard.values(), revision: storageGuard.status().revision } : { ok: false };
+    } catch (error) {
+      storageUnavailable.add(event.sender);
+      logStorageError('ready', error); event.returnValue = { ok: false };
+    }
+  });
+  ipcMain.on('desktop:storage-write', (event, key, value, previous) => {
+    if (!ownsEvent(event) || !storageGuard) { event.returnValue = false; return; }
+    try {
+      storageGuard.write(key, value, previous);
+      const revision = storageGuard.status().revision;
+      // Only acknowledged durable commits may update another panel's view.
+      for (const panel of panels) {
+        const target = panelWindow(panel)?.webContents;
+        if (target && target !== event.sender && !target.isDestroyed()) {
+          try { target.send('desktop:storage-changed', { key, value, revision }); }
+          catch (error) { logStorageError('notify', error); }
+        }
+      }
+      event.returnValue = { ok: true, revision };
+    } catch (error) {
+      logStorageError('write', error);
+      event.returnValue = error.code === 'STORAGE_CONFLICT'
+        ? { ok: false, current: error.current, revision: storageGuard.status().revision } : false;
+    }
+  });
+  ipcMain.on('desktop:storage-cache-error', event => {
+    if (ownsEvent(event)) logStorageError('browser-cache', { code: 'CACHE_UNAVAILABLE' });
+  });
+  ipcMain.on('desktop:storage-reload', event => {
+    if (!ownsEvent(event)) return;
+    for (const panel of panels) {
+      const target = panelWindow(panel)?.webContents;
+      if (target && !target.isDestroyed() && (target === event.sender || storageUnavailable.has(target)))
+        target.reload();
+    }
+  });
+
   ipcMain.handle('desktop:set-pin', (event, panel, enabled) => {
     const win = panelWindow(panel);
     if (!ownsEvent(event) || !win || win.isDestroyed()) return { ...pinned };
@@ -386,12 +484,16 @@ else {
       pinned[panel] = !!enabled;
       syncNativeTopmost();
       if (enabled && !windowsDesktop.isTopmost(win.getNativeWindowHandle())) pinned[panel] = false;
+    } else if (process.platform === 'darwin') {
+      pinned[panel] = !!enabled;
+      syncMacModalStacking();
+      if (enabled && !win.isAlwaysOnTop()) pinned[panel] = false;
     } else {
       win.setAlwaysOnTop(!!enabled, 'floating');
       pinned[panel] = win.isAlwaysOnTop();
     }
     // Re-stack each transparent panel after removing its topmost band without taking focus.
-    if (!nativeHitTesting && !pinned[panel] && win.isVisible()) win.showInactive();
+    if (!nativeHitTesting && process.platform !== 'darwin' && !pinned[panel] && win.isVisible()) win.showInactive();
     routePointerToPanel();
     return { ...pinned };
   });
@@ -447,6 +549,7 @@ else {
   }
 
   app.whenReady().then(() => {
+    storageGuard = createStorageGuard(path.join(app.getPath('userData'), 'data-safety'));
     app.setAppUserModelId('com.lllleolin.taskboard');
     if (process.platform === 'darwin') app.dock?.hide();
     createTray();

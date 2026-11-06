@@ -8,7 +8,7 @@ const SETTINGS = 'minimal-task-widget-settings-v1';
 const COURSES = 'minimal-task-widget-schedule-v1';
 const DRAFT = 'minimal-task-widget-draft-html-v1';
 const LAYOUT = 'minimal-task-widget-schedule-layout-v1';
-const saveFailure = /保存失败|无法.*保存|存储空间/;
+const saveFailure = /保存失败|保存未成功|无法.*保存|存储空间/;
 
 const test = base.extend({
   page: async ({ page }, use) => {
@@ -53,6 +53,95 @@ async function enableCourses(page) {
   await page.locator('#settings-close').click();
   await expect(page.locator('#schedule-card')).toBeVisible();
 }
+
+test('desktop initialization failure shows a persistent reload state while preserving saved records', async ({ page }) => {
+  const saved = JSON.stringify([{ id: 'preserved', type: 'side', title: '原始任务', items: [] }]);
+  await page.evaluate(({ key, saved }) => localStorage.setItem(key, saved), { key: TASKS, saved });
+  await page.addInitScript(() => {
+    window.desktopBridge = {
+      isStorageReady: () => window.name === 'retry-storage',
+      writeStorage: () => false,
+      onWidgetBounds() {},
+      getWidgetBounds: async () => null,
+      setLocale() {},
+      getPins: async () => ({ widget: false, schedule: false }),
+    };
+  });
+  await page.reload();
+  await expect(page.locator('#storage-recovery')).toBeVisible();
+  await expect(page.locator('#storage-recovery')).toContainText('原记录已保留');
+  expect(await raw(page, TASKS)).toBe(saved);
+  await page.evaluate(() => { window.name = 'retry-storage'; });
+  await page.getByRole('button', { name: '重新加载数据', exact: true }).click();
+  await expect(page.locator('#storage-recovery')).toHaveCount(0);
+  await expect(page.locator('.task-title')).toHaveText('原始任务');
+  expect(await raw(page, TASKS)).toBe(saved);
+});
+
+test('denied storage reads keep the UI usable without overwriting unread tasks', async ({ page }) => {
+  const savedTasks = JSON.stringify([{ id: 'saved', type: 'side', title: '读取失败时保留的任务', items: [] }]);
+  await page.evaluate(({ key, value }) => localStorage.setItem(key, value), { key: TASKS, value: savedTasks });
+  await page.addInitScript(() => {
+    if (window.name === 'storage-restored') return;
+    const getItem = Storage.prototype.getItem;
+    Storage.prototype.getItem = function () { throw new DOMException('Storage access denied', 'SecurityError'); };
+    window.restoreStorageReads = () => {
+      Storage.prototype.getItem = getItem;
+      window.name = 'storage-restored';
+    };
+  });
+  await page.reload();
+  await expect(page.locator('.schedule-slot')).toHaveCount(210);
+  await page.locator('[data-add="side"]').click();
+  await page.locator('#task-input').fill('不能覆盖旧任务');
+  await page.locator('#form button[type="submit"]').click();
+  await expect(page.locator('#scrim')).toHaveClass(/open/);
+  await expect(page.locator('#task-input')).toHaveValue('不能覆盖旧任务');
+  await expect(page.locator('#toast')).toContainText('读取失败');
+  await page.evaluate(() => window.restoreStorageReads());
+  expect(await raw(page, TASKS)).toBe(savedTasks);
+  // Read access alone does not make the in-memory empty list authoritative.
+  await page.locator('#form button[type="submit"]').click();
+  expect(await raw(page, TASKS)).toBe(savedTasks);
+  await page.reload();
+  await expect(page.locator('.task-title')).toHaveText('读取失败时保留的任务');
+});
+
+test('schedule initialization survives a quota failure while advancing the saved day', async ({ page }) => {
+  await page.clock.setFixedTime(new Date('2026-09-29T04:00:00Z'));
+  const savedSettings = JSON.stringify({
+    periodMode: 'day', periodStart: '2026-09-28', periodEnd: '2026-09-28',
+    followSystemDate: true, courseEnabled: true,
+  });
+  await page.evaluate(({ key, value }) => localStorage.setItem(key, value), {
+    key: SETTINGS, value: savedSettings,
+  });
+  await page.addInitScript(key => {
+    const setItem = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (name, value) {
+      if (name === key) throw new DOMException('Local storage quota exhausted', 'QuotaExceededError');
+      return setItem.call(this, name, value);
+    };
+    window.desktopBridge = {
+      reportWidgetBounds() {},
+      reportScheduleBounds(bounds) { window.lastScheduleBounds = bounds; },
+      getPins: async () => ({ widget: false, schedule: false }),
+      setLocale() {},
+      onWidgetBounds() {},
+      getWidgetBounds: async () => null,
+    };
+  }, SETTINGS);
+  await page.goto(`${url}?panel=schedule`);
+
+  await expectFailureToast(page);
+  expect(await raw(page, SETTINGS)).toBe(savedSettings);
+  await expect(page.locator('.schedule-slot')).toHaveCount(210);
+  await expect.poll(() => page.evaluate(() => window.lastScheduleBounds?.visible)).toBe(true);
+  await expect.poll(() => page.evaluate(() => window.lastScheduleBounds?.extraRects.length)).toBe(1);
+  await page.locator('#schedule-edit').click();
+  await expect(page.locator('#schedule-scrim')).toHaveClass(/open/);
+  await expect(page.locator('#course-name')).toBeFocused();
+});
 
 test('task quota failure keeps the form and prior data; retry saves exactly one task', async ({ page }) => {
   const before = await raw(page, TASKS);

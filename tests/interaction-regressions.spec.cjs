@@ -528,6 +528,36 @@ test('docked dragging preserves a valid middle-screen pointer destination', asyn
   await schedule.close();
 });
 
+for (const { edge, left, top, handle, dx, dy } of [
+  { edge: 'right', left: 300, top: 200, handle: 'e', dx: 180, dy: 0 },
+  { edge: 'bottom', left: 300, top: 300, handle: 's', dx: 0, dy: 200 },
+  { edge: 'left', left: 700, top: 200, handle: 'w', dx: -180, dy: 0 },
+  { edge: 'top', left: 300, top: 380, handle: 'n', dx: 0, dy: -180 },
+]) {
+  test(`resizing the widget keeps its ${edge}-docked custom schedule within the viewport`, async ({ page, context }) => {
+    const layout = { floating: false, left: 160, top: 420, width: 566, height: 269, customSize: true, dockEdge: edge };
+    const schedule = await desktopPair(page, context, layout);
+    const initial = await page.locator('#widget').boundingBox();
+    await movePointer(page, page.locator('#widget .top'), left - initial.x, top - initial.y, { x: 15, y: 25 });
+    const before = await page.locator('#widget').boundingBox();
+    await movePointer(page, page.locator(`[data-resize="${handle}"]`), dx, dy);
+    const main = await page.locator('#widget').boundingBox();
+    const card = await schedule.locator('#schedule-card').boundingBox();
+    if (dx) expect(main.width).toBeCloseTo(before.width + Math.abs(dx), 1);
+    if (dy) expect(main.height).toBeCloseTo(before.height + Math.abs(dy), 1);
+    for (const rect of [main, card]) {
+      expect.soft(rect.x).toBeGreaterThanOrEqual(0);
+      expect.soft(rect.y).toBeGreaterThanOrEqual(0);
+      expect.soft(rect.x + rect.width).toBeLessThanOrEqual(page.viewportSize().width);
+      expect.soft(rect.y + rect.height).toBeLessThanOrEqual(page.viewportSize().height);
+    }
+    expect({ width: card.width, height: card.height }).toEqual({ width: 566, height: 269 });
+    expect(await page.evaluate(key => JSON.parse(localStorage.getItem(key)), SCHEDULE_LAYOUT))
+      .toMatchObject({ floating: false, width: 566, height: 269, customSize: true, dockEdge: edge });
+    await schedule.close();
+  });
+}
+
 test('a floating schedule does not constrain the widget at the viewport edge', async ({ page, context }) => {
   const schedule = await desktopPair(page, context, {
     floating: true, left: 100, top: 300, width: 600, height: 500,
