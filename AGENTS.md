@@ -17,4 +17,5 @@ If there is no `.codegraph/` directory, skip CodeGraph entirely — indexing is 
 - 升级回归使用隔离的持久用户目录：准备旧格式数据，关闭应用、更换程序文件、重启并核对原始任务/课程/草稿内容和历史查询。覆盖一次无关编辑后其余记录仍完整。禁止把真实用户目录当测试数据使用。
 - 本机覆盖更新须先正常退出程序，将数据备份到安装目录之外，再替换程序文件并验证。备份、迁移或验证失败时不得继续覆盖旧数据。安装器保持 `deleteAppDataOnUninstall: false`，升级不传删除应用数据的参数。
 - 更新不能只核验程序文件哈希：须在替换前保存完整原始存储键的逻辑快照，重启实际安装程序后逐键核对任务、课表、草稿、备注/图片及未知字段，设置仅允许明确的当天跟随变化。首次引入安全快照时以已核验的升级前逻辑快照初始化，不得以可能已回退的启动结果作为基准。禁止混拷新旧 LevelDB 文件；旧的 `test-results-deploy/update-local.ps1` 已停用。
+- Windows 本机的备份、恢复、启动与验收均使用 Explorer 桌面进程启动的环境，可通过 `scripts/start-from-desktop.ps1` 调用。应用报告的 `userData` 字符串可能相同，必须核验实际快照文件的物理路径。MSIX 的 `Packages/<包名>/LocalCache/Roaming` 副本单独备份。先核对两边完整原始键，再恢复桌面使用的资料。
 - 继续按用户约定先提交 GitHub、更新本机运行目录；用户确认后才制作安装包和 Release。根目录 README 等并行修改单独保留，不混入无关提交。
