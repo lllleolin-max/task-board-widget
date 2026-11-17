@@ -439,6 +439,19 @@
         border-width: 0 1.4px 1.4px 0;
         transform: rotate(45deg);
       }
+      .task-heading {
+        min-width: 0;
+        display: flex;
+        align-items: baseline;
+        flex-wrap: wrap;
+        gap: 3px 7px;
+      }
+      .carryover-label {
+        color: var(--red);
+        font-size: 10px;
+        line-height: 1.45;
+        white-space: nowrap;
+      }
       .task-title {
         font-size: 12px;
         line-height: 1.45;
@@ -465,6 +478,7 @@
         color: #c1c1ba;
       }
       .expand {
+        grid-column: 4;
         border: 0;
         background: none;
         color: #b3b3aa;
@@ -949,6 +963,64 @@
         color: var(--green);
         padding: 4px 0;
       }
+      .task.pinned .task-title::before {
+        content: "";
+        display: inline-block;
+        width: 12px;
+        height: 12px;
+        margin-right: 5px;
+        vertical-align: -1px;
+        background: var(--green);
+        mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' d='M16 9V3H8v6l-3 3v3h14v-3zM12 15v7'/%3E%3C/svg%3E") center / contain no-repeat;
+      }
+      .task-menu {
+        position: fixed;
+        z-index: 35;
+        min-width: 156px;
+        max-width: calc(100vw - 16px);
+        padding: 5px;
+        background: var(--paper);
+        color: var(--ink);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        box-shadow: 0 6px 24px rgba(36, 37, 31, 0.16);
+      }
+      .task-menu[hidden] { display: none; }
+      .task-menu button {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        width: 100%;
+        padding: 9px 10px;
+        border: 0;
+        border-radius: 6px;
+        background: transparent;
+        color: inherit;
+        font: inherit;
+        font-size: 12px;
+        text-align: left;
+        cursor: pointer;
+      }
+      .task-menu button:hover,
+      .task-menu button:focus-visible {
+        background: rgba(128, 128, 116, 0.12);
+        outline: none;
+      }
+      .task-menu button[data-task-action="delete"] { color: var(--red); }
+      .task-menu svg { width: 15px; height: 15px; flex: none; }
+      #storage-recovery {
+        position: absolute;
+        inset: 0;
+        z-index: 1000;
+        background: var(--paper);
+        color: var(--ink);
+        padding: 20px;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        gap: 12px;
+        border-radius: inherit;
+      }
       .toast {
         position: fixed;
         bottom: 18px;
@@ -960,6 +1032,9 @@
         padding: 8px 13px;
         border-radius: 7px;
         font-size: 11px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
         transition: 0.18s;
         pointer-events: none;
         z-index: 30;
@@ -967,6 +1042,17 @@
       .toast.show {
         opacity: 1;
         transform: translateX(-50%) translateY(0);
+      }
+      .toast.show:has(#task-undo) { pointer-events: auto; }
+      #task-undo {
+        padding: 5px 8px;
+        border: 1px solid rgba(255, 255, 255, 0.45);
+        border-radius: 4px;
+        background: transparent;
+        color: inherit;
+        font: inherit;
+        white-space: nowrap;
+        cursor: pointer;
       }
       html[data-desktop-panel] .toast {
         width: max-content;
@@ -1275,6 +1361,10 @@
       }
       .period-trigger:hover {
         background: rgba(96, 123, 97, 0.1);
+      }
+      #period-today {
+        margin-right: auto;
+        color: var(--green);
       }
       .period-dialog {
         width: min(330px, 100%);
@@ -1807,6 +1897,21 @@
         font-weight: 650;
         color: var(--green);
       }
+      .schedule-heading {
+        min-width: 0;
+        line-height: 12px;
+      }
+      .schedule-week-range {
+        display: block;
+        margin-top: 2px;
+        color: var(--muted);
+        font-size: 9px;
+        font-weight: 400;
+        line-height: 11px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
       .schedule-lock {
         width: 25px;
         height: 25px;
@@ -2008,6 +2113,15 @@
       }
       .schedule-dialog .actions {
         margin-top: 15px;
+      }
+      .course-week-setting {
+        margin-top: 14px;
+        padding-bottom: 0;
+        font-size: 12px;
+        gap: 12px;
+      }
+      .course-week-setting .switch {
+        flex-shrink: 0;
       }
       @keyframes schedule-in {
         from {
@@ -2262,7 +2376,7 @@
         ><i class="schedule-resize-handle se" data-schedule-resize="se"></i
         ><i class="schedule-resize-handle sw" data-schedule-resize="sw"></i>
         <header class="schedule-head">
-          <span class="schedule-title">每周课表</span>
+          <div class="schedule-heading"><span class="schedule-title">每周课表</span><small class="schedule-week-range" id="schedule-week-range"></small></div>
           <div class="schedule-tools">
             <button
               class="icon-button schedule-lock"
@@ -2407,6 +2521,7 @@
         </div>
         <div class="period-range" id="period-range"></div>
         <div class="actions">
+          <button type="button" class="cancel" id="period-today">今天</button>
           <button type="button" class="cancel" id="period-cancel">取消</button
           ><button type="button" class="save" id="period-apply">应用</button>
         </div>
@@ -2551,6 +2666,16 @@
                 ><select id="course-end" aria-label="结束时间"></select></div
             ></label>
           </div>
+          <div class="course-setting course-week-setting">
+            <div>
+              <span id="course-week-label">仅本周</span>
+              <small id="course-week-hint">开启后仅在本周显示，下周不再重复</small>
+              <small id="course-week-range"></small>
+            </div>
+            <button type="button" class="switch" id="course-week-only" role="switch"
+              aria-checked="false" aria-labelledby="course-week-label"
+              aria-describedby="course-week-hint course-week-range"></button>
+          </div>
           <div class="actions">
             <button
               type="button"
@@ -2595,13 +2720,24 @@
       </div>
       <div class="draft-hint">自动保存 · 可复制粘贴图片 · 拖动标题栏移动</div>
     </div>
-    <div class="toast" id="toast"></div>
+    <div class="task-menu" id="task-menu" role="menu" aria-label="任务操作" hidden>
+      <button type="button" role="menuitem" data-task-action="pin" tabindex="-1">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 9V3H8v6l-3 3v3h14v-3zM12 15v7"/></svg>
+        <span>置顶任务</span>
+      </button>
+      <button type="button" role="menuitem" data-task-action="delete" tabindex="-1">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/></svg>
+        <span>删除任务</span>
+      </button>
+    </div>
+    <div class="toast" id="toast" role="status"></div>
     <script>
       const KEY = "minimal-task-widget-v1",
         DRAFT_KEY = "minimal-task-widget-draft-html-v1",
         DRAFT_TITLE_KEY = "minimal-task-widget-draft-title-v1",
         UI_KEY = "minimal-task-widget-collapsed-v1",
         LOCK_KEY = "minimal-task-widget-locked-v1",
+        SCHEDULE_COLLAPSED_KEY = "minimal-task-widget-schedule-collapsed-v1",
         SCHEDULE_LOCK_KEY = "minimal-task-widget-schedule-locked-v1",
         SETTINGS_KEY = "minimal-task-widget-settings-v1";
       const dateFormatters = new Map();
@@ -2627,10 +2763,20 @@
         documentListeners.push({ type, handler, options });
         document.addEventListener(type, handler, options);
       }
-      let toastTimer;
-      function toast(message) {
+      let toastTimer, pendingTaskUndo = null;
+      function toast(message, undo) {
         const el = $("toast");
+        if (undo) pendingTaskUndo = { undo, expiresAt: Date.now() + 10000 };
+        if (pendingTaskUndo?.expiresAt <= Date.now()) pendingTaskUndo = null;
         el.textContent = tr(message);
+        if (pendingTaskUndo) {
+          const button = activeDocument().createElement("button");
+          button.id = "task-undo";
+          button.type = "button";
+          button.textContent = tr("撤销删除");
+          button.onclick = pendingTaskUndo.undo;
+          el.append(button);
+        }
         if (window.desktopBridge) {
           const rect = $(
             desktopPanel === "schedule" ? "schedule-card" : "widget",
@@ -2652,7 +2798,18 @@
         }
         el.classList.add("show");
         clearTimeout(toastTimer);
-        toastTimer = setTimeout(() => el.classList.remove("show"), 1800);
+        toastTimer = setTimeout(() => {
+          el.classList.remove("show");
+          pendingTaskUndo = null;
+          if ($("task-undo")) $("task-undo").disabled = true;
+          reportWidgetBounds();
+          reportScheduleBounds();
+        }, pendingTaskUndo ? Math.max(0, pendingTaskUndo.expiresAt - Date.now()) : 1800);
+        // Startup storage errors can toast before the schedule bindings exist.
+        requestAnimationFrame(() => {
+          reportWidgetBounds();
+          reportScheduleBounds();
+        });
       }
       function toastRects() {
         const el = $("toast");
@@ -2660,17 +2817,61 @@
         const { left, top, width, height } = el.getBoundingClientRect();
         return [{ left, top, width, height }];
       }
-      function writeStorage(key, value) {
+      let storageReadFailed = false;
+      const invalidStorageKeys = new Set();
+      function readStorage(key) {
         try {
-          localStorage.setItem(key, value);
+          if (window.desktopBridge?.isStorageReady?.() === false)
+            throw new Error("Storage safeguard unavailable");
+          if (window.desktopBridge?.readStorage)
+            return window.desktopBridge.readStorage(key);
+          return localStorage.getItem(key);
+        } catch {
+          storageReadFailed = true;
+          return null;
+        }
+      }
+      function writeStorage(key, value) {
+        // An empty fallback must never overwrite data we could not read.
+        if (storageReadFailed) {
+          toast("本地数据读取失败，请重新打开后重试");
+          return false;
+        }
+        if (invalidStorageKeys.has(key)) {
+          toast("无法识别这项数据的格式，原记录已保留");
+          return false;
+        }
+        try {
+          if (window.desktopBridge?.writeStorage) {
+            if (!window.desktopBridge.writeStorage(key, value))
+              throw new Error("Storage safeguard failed");
+          } else if (value === null) localStorage.removeItem(key);
+          else localStorage.setItem(key, value);
           return true;
         } catch {
-          toast("本地保存失败，请释放存储空间后重试");
+          toast(window.desktopBridge
+            ? "保存未成功，请重试；原记录已保留"
+            : "本地保存失败，请释放存储空间后重试");
           return false;
         }
       }
-      function saveSettings(next) {
-        if (!writeStorage(SETTINGS_KEY, JSON.stringify(next))) return false;
+      // A missing key is normal on first run. An unreadable existing value
+      // stays untouched until a readable value arrives or the page reloads.
+      function parseStoredJSON(key, raw, fallback) {
+        try {
+          const value = raw === null ? fallback : JSON.parse(raw);
+          if (!value || typeof value !== "object" || Array.isArray(value) !== Array.isArray(fallback))
+            throw new TypeError("Unexpected saved data format");
+          invalidStorageKeys.delete(key);
+          return value;
+        } catch {
+          invalidStorageKeys.add(key);
+          return undefined;
+        }
+      }
+      function saveSettings(next, raw = next) {
+        if (!writeStorage(SETTINGS_KEY, JSON.stringify(raw))) return false;
+        savedSettings = raw;
         settings = next;
         return true;
       }
@@ -2700,7 +2901,7 @@
             width: r.width,
             height: r.height,
             visible: true,
-            modal: !!document.querySelector(".scrim.open"),
+            modal: !!document.querySelector(".scrim.open") || !$("task-menu").hidden,
             extraRects: [
               ...(draftRect
                 ? [
@@ -2728,39 +2929,34 @@
           attributeFilter: ["class", "style"],
         });
       }
-      let tasks;
-      try {
-        tasks = JSON.parse(localStorage.getItem(KEY)) || [];
-      } catch {
-        tasks = [];
+      // The UI can address legacy records without adding or changing their
+      // stored IDs. Object spread carries the symbol across edits; JSON omits it.
+      const rowId = Symbol("rowId");
+      function identifyRecords(records) {
+        const used = new Set();
+        for (const record of records) {
+          if (!record || typeof record !== "object" || Array.isArray(record)) continue;
+          const id = record[rowId] ?? record.id;
+          record[rowId] = typeof id === "string" && id && !used.has(id) ? id : crypto.randomUUID();
+          used.add(record[rowId]);
+        }
+        return records;
       }
-      function normalizeTasks(value) {
-        return (Array.isArray(value) ? value : [])
-          .filter(
-            (t) =>
-              t &&
-              typeof t.title === "string" &&
-              ["main", "side"].includes(t.type),
-          )
-          .map((t) => ({
-            ...t,
-            id: typeof t.id === "string" ? t.id : crypto.randomUUID(),
-            date: validDate(t.date) ? t.date : "",
-            dateStart: validDate(t.dateStart) ? t.dateStart : "",
-            dateEnd: validDate(t.dateEnd) ? t.dateEnd : "",
-            period:
-              validDate(t.period?.start) && validDate(t.period?.end)
-                ? t.period
-                : null,
-            items: Array.isArray(t.items)
-              ? t.items.filter((item) => item && typeof item === "object")
-              : [],
-            memos: Array.isArray(t.memos)
-              ? t.memos.filter((item) => item && typeof item === "object")
-              : [],
-          }));
+      // Only the display projection normalizes dates. Saves edit original
+      // records, including fields and neighboring rows this version cannot show.
+      function taskForDisplay(t) {
+        return {
+          ...t, id: t[rowId], pinned: t.pinned === true,
+          completedOn: t.done && validDate(t.completedOn) ? t.completedOn : "",
+          date: validDate(t.date) ? t.date : "",
+          dateStart: validDate(t.dateStart) ? t.dateStart : "",
+          dateEnd: validDate(t.dateEnd) ? t.dateEnd : "",
+          period: validDate(t.period?.start) && validDate(t.period?.end) ? t.period : null,
+          items: Array.isArray(t.items) ? t.items : [],
+          memos: Array.isArray(t.memos) ? t.memos : [],
+        };
       }
-      tasks = normalizeTasks(tasks);
+      let tasks = identifyRecords(parseStoredJSON(KEY, readStorage(KEY), []) ?? []);
       let addingType = "main";
       function validDate(value) {
         if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value))
@@ -2816,14 +3012,8 @@
         }
         return result;
       }
-      let settings = defaultSettings();
-      try {
-        settings = {
-          ...settings,
-          ...JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}"),
-        };
-      } catch {}
-      settings = normalizeSettings(settings);
+      let savedSettings = parseStoredJSON(SETTINGS_KEY, readStorage(SETTINGS_KEY), {}) ?? {};
+      let settings = normalizeSettings(savedSettings);
       const localeNames = {
         "zh-CN": "zh-CN",
         en: "en-US",
@@ -2839,6 +3029,45 @@
         "zh-TW": "主線 / 支線",
       };
       const lexicon = {
+        "无法识别这项数据的格式，原记录已保留": [
+          "This data format is unreadable. Your original records have been kept.",
+          "このデータ形式を読み込めません。元の記録は保持されています。",
+          "이 데이터 형식을 읽을 수 없습니다. 원래 기록은 보존되어 있습니다.",
+          "無法辨識這項資料的格式，原記錄已保留",
+        ],
+        "数据暂时无法读取，原记录已保留。请重试加载。": [
+          "Saved data is temporarily unavailable and has been retained. Retry loading.",
+          "保存データを一時的に読み込めません。データは保持されています。再読み込みしてください。",
+          "저장된 데이터를 일시적으로 읽을 수 없습니다. 데이터는 보존되어 있습니다. 다시 불러오세요.",
+          "資料暫時無法讀取，原記錄已保留。請重試載入。",
+        ],
+        重新加载数据: ["Reload saved data", "保存データを再読み込み", "저장 데이터 다시 불러오기", "重新載入資料"],
+        "保存未成功，请重试；原记录已保留": [
+          "Could not save. Retry; your previous records have been retained.",
+          "保存できませんでした。以前のデータは保持されています。再試行してください。",
+          "저장하지 못했습니다. 이전 기록은 보존되어 있습니다. 다시 시도하세요.",
+          "儲存未成功，請重試；原記錄已保留",
+        ],
+        已从安全备份恢复本地数据: [
+          "Local data restored from a safety backup",
+          "安全なバックアップからローカルデータを復元しました",
+          "안전 백업에서 로컬 데이터를 복원했습니다",
+          "已從安全備份恢復本機資料",
+        ],
+        任务操作: ["Task actions", "タスク操作", "작업 메뉴", "任務操作"],
+        置顶任务: ["Pin task", "タスクを固定", "작업 고정", "置頂任務"],
+        取消置顶任务: ["Unpin task", "タスクの固定を解除", "작업 고정 해제", "取消置頂任務"],
+        删除任务: ["Delete task", "タスクを削除", "작업 삭제", "刪除任務"],
+        任务已删除: ["Task deleted", "タスクを削除しました", "작업을 삭제했습니다", "任務已刪除"],
+        撤销删除: ["Undo delete", "削除を元に戻す", "삭제 취소", "復原刪除"],
+        已撤销删除: ["Task restored", "タスクを復元しました", "작업을 복원했습니다", "已復原任務"],
+        "撤销失败，请重试": ["Could not restore. Please retry.", "復元できません。再試行してください。", "복원하지 못했습니다. 다시 시도하세요.", "復原失敗，請重試"],
+        "本地数据读取失败，请重新打开后重试": [
+          "Could not read local data. Reopen the app and retry.",
+          "ローカルデータを読み込めません。再度開いてお試しください。",
+          "로컬 데이터를 읽을 수 없습니다. 앱을 다시 열어 재시도하세요.",
+          "本機資料讀取失敗，請重新開啟後再試",
+        ],
         "本地保存失败，请释放存储空间后重试": [
           "Could not save locally. Free some storage and retry.",
           "保存できません。空き容量を増やして再試行してください。",
@@ -3035,6 +3264,7 @@
           "選擇檢視日期",
         ],
         选择日期: ["Choose date", "日付を選択", "날짜 선택", "選擇日期"],
+        查看当天: ["View this day", "この日を表示", "이 날짜 보기", "查看當天"],
         日待办: ["Today", "今日", "오늘", "今日待辦"],
         周待办: ["Week", "今週", "이번 주", "本週待辦"],
         月待办: ["Month", "今月", "이번 달", "本月待辦"],
@@ -3108,6 +3338,13 @@
         结束时间: ["End time", "終了時刻", "종료 시간", "結束時間"],
         删除课程: ["Delete class", "授業を削除", "수업 삭제", "刪除課程"],
         每周课表: ["Weekly schedule", "週間時間割", "주간 시간표", "每週課表"],
+        仅本周: ["This week only", "今週のみ", "이번 주만", "僅本週"],
+        "开启后仅在本周显示，下周不再重复": [
+          "Show only this week; do not repeat next week",
+          "今週のみ表示し、来週は繰り返しません",
+          "이번 주에만 표시하고 다음 주에는 반복하지 않습니다",
+          "開啟後僅在本週顯示，下週不再重複",
+        ],
         添加或删除课程: [
           "Add or remove classes",
           "授業を追加・削除",
@@ -3232,6 +3469,18 @@
           "常に手前に表示",
           "항상 위에 표시",
           "桌面置頂",
+        ],
+        将主体置顶到桌面浮窗: [
+          "Keep the widget on top",
+          "ウィジェットを最前面に表示",
+          "위젯을 항상 위에 표시",
+          "將主體置頂",
+        ],
+        将课表置顶到桌面浮窗: [
+          "Keep the schedule on top",
+          "時間割を最前面に表示",
+          "시간표를 항상 위에 표시",
+          "將課表置頂",
         ],
         将主体和课表置顶到桌面浮窗: [
           "Keep the widget and schedule on top",
@@ -3438,6 +3687,10 @@
         const value = String(text),
           index = localeIndex[uiLocale];
         if (index === undefined) return value;
+        if (Array.isArray(lexicon[value])) return lexicon[value][index];
+        const trimmed = value.trim();
+        if (trimmed && trimmed !== value)
+          return value.replace(trimmed, () => tr(trimmed));
         const count = value.match(/^(\d+) 项待办$/);
         if (count) {
           const n = Number(count[1]);
@@ -3449,7 +3702,7 @@
                 ? `${n}개 할 일`
                 : `${n} 項待辦`;
         }
-        return Array.isArray(lexicon[value]) ? lexicon[value][index] : value;
+        return value;
       }
       const originalText = new WeakMap();
       const sourceText = new Map();
@@ -3458,7 +3711,13 @@
           if (!sourceText.has(text)) sourceText.set(text, source);
       }
       function untr(text) {
-        return sourceText.get(String(text)) || String(text);
+        const value = String(text);
+        if (Array.isArray(lexicon[value])) return value;
+        if (sourceText.has(value)) return sourceText.get(value);
+        const trimmed = value.trim();
+        return trimmed
+          ? value.replace(trimmed, () => sourceText.get(trimmed) || trimmed)
+          : value;
       }
       function setLocalizedText(element, source, localized = tr(source)) {
         element.textContent = localized;
@@ -3511,19 +3770,16 @@
         activeDocument().title = languageNames[uiLocale];
         window.desktopBridge?.setLocale(uiLocale);
         $("language-select").value = uiLocale;
-        taskWeekdays = Array.from({ length: 7 }, (_, i) =>
+        weekdays = Array.from({ length: 7 }, (_, i) =>
           dateFormatter(localeNames[uiLocale], {
             weekday: "short",
             timeZone: "UTC",
           }).format(new Date(Date.UTC(2024, 0, 1 + i))),
         );
-        weekdays = taskWeekdays.slice();
-        courseDay
-          ?.querySelectorAll("option")
-          .forEach(
-            (option, index) =>
-              (option.textContent = weekdays[index] || option.textContent),
-          );
+        weekdays.forEach((label, index) => {
+          courseDay.options[index].textContent = label;
+          scheduleHeader.children[index + 1].textContent = label;
+        });
         localizeTree(activeDocument().body);
         render();
         if ($("scrim").classList.contains("open")) drawTaskDatePicker();
@@ -3592,9 +3848,8 @@
             : Date.now(),
         );
       }
-      function currentZoneDay() {
-        const now = currentTime(),
-          parts = dateFormatter("en-CA", {
+      function currentZoneDay(now = currentTime()) {
+        const parts = dateFormatter("en-CA", {
             timeZone: settings.timezone,
             year: "numeric",
             month: "2-digit",
@@ -3607,28 +3862,29 @@
         const element = $(id);
         if (element.textContent !== value) element.textContent = value;
       }
+      let lastClockDay = "", lastScheduleWeek = "";
       function updateClock() {
         const now = currentTime(),
-          opts = { timeZone: settings.timezone };
+          opts = { timeZone: settings.timezone },
+          today = currentZoneDay(now);
+        let refreshTasks = !!lastClockDay && lastClockDay !== today;
+        lastClockDay = today;
         if (
           settings.periodMode === "day" &&
           settings.followSystemDate !== false
         ) {
-          const parts = dateFormatter("en-CA", {
-              ...opts,
-              year: "numeric",
-              month: "2-digit",
-              day: "2-digit",
-            }).formatToParts(now),
-            part = (k) => parts.find((p) => p.type === k).value,
-            today = `${part("year")}-${part("month")}-${part("day")}`;
           if (settings.periodStart !== today || settings.periodEnd !== today) {
-            settings.periodStart = today;
-            settings.periodEnd = today;
-            writeStorage(SETTINGS_KEY, JSON.stringify(settings));
-            if (typeof render === "function") render();
+            const next = { ...settings, periodStart: today, periodEnd: today };
+            // One desktop writer follows the date. A failed commit is retried
+            // on the next clock tick rather than marked successful in memory.
+            if ((desktopPanel === "schedule" && window.desktopBridge?.onStorageChanged) ||
+                saveSettings(next, { ...savedSettings, periodStart: today, periodEnd: today })) {
+              settings = next;
+              refreshTasks = true;
+            }
           }
         }
+        if (refreshTasks) render();
         const selectedDay =
             settings.periodMode === "day" && settings.periodStart,
           displayDate = selectedDay
@@ -3660,6 +3916,9 @@
             hour12: false,
           }).format(now),
         );
+        const week = scheduleWeekStart();
+        if (lastScheduleWeek && lastScheduleWeek !== week) drawSchedule();
+        lastScheduleWeek = week;
       }
       updateClock();
       setInterval(updateClock, 1000);
@@ -3698,18 +3957,26 @@
         $("app-stack").dataset.theme = settings.theme;
       }
       applyTheme(settings.theme || "default");
-      function persist(next = tasks) {
+      function persist(next) {
         if (!writeStorage(KEY, JSON.stringify(next))) return false;
-        tasks = next;
+        tasks = identifyRecords(next);
         render();
         return true;
       }
       function updateTask(id, update) {
-        const current = tasks.find((task) => task.id === id);
-        return (
-          !!current &&
-          persist(tasks.map((task) => (task === current ? update(task) : task)))
-        );
+        const current = tasks.find((task) => task?.[rowId] === id);
+        if (!current) return false;
+        const next = update(current);
+        return !!next && persist(tasks.map(task => task === current ? next : task));
+      }
+      function appendTaskEntry(id, field, entry) {
+        return updateTask(id, task => {
+          if (task[field] != null && !Array.isArray(task[field])) {
+            toast("无法识别这项数据的格式，原记录已保留");
+            return null;
+          }
+          return { ...task, [field]: [...(task[field] || []), entry] };
+        });
       }
       function deadlineLabel(date) {
         if (!date) return "";
@@ -3734,6 +4001,10 @@
         if (text !== undefined) el.textContent = text;
         parent.append(el);
         return el;
+      }
+      function isEmbeddedImage(src) {
+        return typeof src === "string" &&
+          /^data:image\/(png|jpe?g|gif|webp|bmp);base64,[a-z0-9+/=\s]+$/i.test(src);
       }
       function sanitizeDraft(html) {
         const parsed = new DOMParser().parseFromString(
@@ -3785,11 +4056,7 @@
             for (const attribute of [...child.attributes])
               child.removeAttribute(attribute.name);
             if (child.tagName === "IMG") {
-              if (
-                !/^data:image\/(png|jpe?g|gif|webp|bmp);base64,[a-z0-9+/=\s]+$/i.test(
-                  src || "",
-                )
-              ) {
+              if (!isEmbeddedImage(src)) {
                 child.remove();
                 continue;
               }
@@ -3801,10 +4068,12 @@
         clean(parsed.body);
         return parsed.body.innerHTML;
       }
-      function matchesPeriod(task) {
+      function matchesPeriod(task, today = currentZoneDay()) {
+        if (carriedFrom(task, today)) return true;
         if (task.type === "main") {
           const start = task.date || task.dateStart || task.period?.start || "",
-            end = task.dateEnd || task.period?.end || start;
+            end = settings.periodMode === "day"
+              ? carryoverDueDate(task) : task.dateEnd || task.period?.end || start;
           if (start && end)
             return start <= settings.periodEnd && end >= settings.periodStart;
           if (settings.periodMode === "day") return false;
@@ -3816,6 +4085,35 @@
           task.period.end === settings.periodEnd
         );
       }
+      function carryoverDueDate(task) {
+        if (task.type === "main") {
+          const start = task.date || task.dateStart || task.period?.start || "",
+            end = task.dateEnd || task.date || task.dateStart || task.period?.end || "";
+          return validDate(start) && validDate(end) && end >= start ? end : "";
+        }
+        const period = task.period;
+        return period?.mode === "day" && period.start === period.end
+          ? period.end : "";
+      }
+      function carriedFrom(task, today = currentZoneDay()) {
+        if (settings.periodMode !== "day") return "";
+        const due = carryoverDueDate(task), day = settings.periodStart;
+        // Derive each day's view from the original record, without making copies
+        // or writing tasks at midnight. Future dates are not carried into early.
+        return due && due < day && day <= today &&
+          (!task.done || (task.completedOn && day <= task.completedOn))
+          ? due : "";
+      }
+      function carryoverLabel(date) {
+        const label = dateFormatter(localeNames[uiLocale], {
+          month: "long", day: "numeric", timeZone: "UTC",
+          ...(date.slice(0, 4) !== settings.periodStart.slice(0, 4) ? { year: "numeric" } : {}),
+        }).format(new Date(date + "T12:00:00Z"));
+        return uiLocale === "en" ? `Unfinished from ${label}`
+          : uiLocale === "ja" ? `${label} 未完了`
+          : uiLocale === "ko" ? `${label} 미완료`
+          : `${label}未完成`;
+      }
       function updatePeriodLabel() {
         const mode =
           { day: "日待办", week: "周待办", month: "月待办", custom: "自定义" }[
@@ -3824,7 +4122,12 @@
         setLocalizedText($("period-open"), `${mode}⌄`);
       }
       function renderGroup(type) {
-        const list = tasks.filter((t) => t.type === type && matchesPeriod(t)),
+        const today = currentZoneDay(),
+          list = tasks
+            .filter((t) => t?.type === type && typeof t.title === "string")
+            .map(taskForDisplay)
+            .filter((t) => matchesPeriod(t, today))
+            .sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned)),
           host = $(type === "main" ? "main-tasks" : "side-tasks");
         $(type === "main" ? "main-count" : "side-count").textContent =
           `${list.filter((t) => !t.done).length} 项待办`;
@@ -3839,6 +4142,7 @@
         for (const task of list) {
           const row = document.createElement("div");
           row.className = "task" + (task.done ? " done" : "");
+          row.classList.toggle("pinned", !!task.pinned);
           const previous = previousRows.get(task.id);
           if (previous?.classList.contains("open")) row.classList.add("open");
           row.dataset.id = task.id;
@@ -3851,14 +4155,19 @@
             updateTask(task.id, (current) => ({
               ...current,
               done: !current.done,
+              completedOn: current.done ? "" : currentZoneDay(),
             }));
           };
-          const title = addText(row, "div", "task-title", task.title);
+          const heading = addText(row, "div", "task-heading");
+          const title = addText(heading, "div", "task-title", task.title);
           title.onclick = () => row.classList.toggle("open");
           title.title = "展开 / 收起说明";
+          const carried = carriedFrom(task, today);
+          if (carried && !task.done)
+            addText(heading, "span", "carryover-label", carryoverLabel(carried));
           if (type === "side" && task.time)
             addText(row, "span", "deadline", task.time);
-          else if (task.date) {
+          else if (task.date && (!carried || task.done)) {
             const end = task.dateEnd || task.date;
             if (end > task.date) {
               const shortDate = (value) => {
@@ -3884,6 +4193,7 @@
           if (task.memos?.length) {
             const memos = addText(details, "div", "task-memos");
             for (const memo of task.memos) {
+              if (!memo || typeof memo !== "object" || Array.isArray(memo)) continue;
               const card = addText(memos, "article", "task-memo");
               addText(card, "div", "memo-title", memo.title || "随手记");
               const body = addText(card, "div", "memo-body");
@@ -3892,6 +4202,7 @@
           }
           const notes = addText(details, "ul", "notes");
           for (const [index, item] of task.items.entries()) {
+            if (!item || typeof item !== "object" || Array.isArray(item)) continue;
             const li = addText(
               notes,
               "li",
@@ -3915,7 +4226,7 @@
             content.onclick = noteCheck.onclick;
             if (item.html) content.innerHTML = sanitizeDraft(item.html);
             else content.textContent = item.text || "";
-            if (item.image && !item.html) {
+            if (isEmbeddedImage(item.image) && !item.html) {
               const img = document.createElement("img");
               img.src = item.image;
               img.alt = "草稿图片";
@@ -3940,21 +4251,89 @@
         }
       }
       function render() {
+        closeTaskMenu();
         renderGroup("main");
         renderGroup("side");
         updatePeriodLabel();
       }
+      let menuTaskId = null;
+      function focusTask(id) {
+        const row = [...activeDocument().querySelectorAll(".task")]
+          .find((item) => item.dataset.id === id);
+        (row?.querySelector(".check") || $("period-open")).focus({ preventScroll: true });
+      }
+      function closeTaskMenu(restoreFocus = false) {
+        const menu = $("task-menu");
+        if (menu.hidden) return;
+        menu.hidden = true;
+        if (restoreFocus) focusTask(menuTaskId);
+        menuTaskId = null;
+        reportWidgetBounds();
+      }
+      function openTaskMenu(row, x, y) {
+        const task = tasks.find((item) => item?.[rowId] === row.dataset.id);
+        if (!task) return;
+        const menu = $("task-menu"), view = activeWindow();
+        menuTaskId = task[rowId];
+        setLocalizedText(menu.querySelector('[data-task-action="pin"] span'),
+          task.pinned === true ? "取消置顶任务" : "置顶任务");
+        // The menu lives outside the card so it can extend beyond its edges.
+        for (const property of ["--paper", "--ink", "--line", "--red"])
+          menu.style.setProperty(property, view.getComputedStyle(widget).getPropertyValue(property));
+        menu.hidden = false;
+        menu.style.left = Math.max(8, Math.min(x, view.innerWidth - menu.offsetWidth - 8)) + "px";
+        menu.style.top = Math.max(8, Math.min(y, view.innerHeight - menu.offsetHeight - 8)) + "px";
+        menu.querySelector("button").focus({ preventScroll: true });
+        reportWidgetBounds();
+      }
+      function offerTaskUndo(deletion, message = "任务已删除") {
+        toast(message, () => {
+          const next = [...tasks];
+          if (!next.some((task) => task?.[rowId] === deletion.task[rowId]))
+            next.splice(Math.min(deletion.index, next.length), 0, deletion.task);
+          if (!persist(next)) {
+            offerTaskUndo(deletion, "撤销失败，请重试");
+            return;
+          }
+          pendingTaskUndo = null;
+          toast("已撤销删除");
+          focusTask(deletion.task[rowId]);
+        });
+      }
+      $("task-menu").onclick = (event) => {
+        const action = event.target.closest("[data-task-action]")?.dataset.taskAction;
+        if (!action) return;
+        const index = tasks.findIndex((task) => task?.[rowId] === menuTaskId);
+        if (index < 0) { closeTaskMenu(true); return; }
+        const task = tasks[index];
+        closeTaskMenu(true);
+        if (action === "pin") {
+          if (updateTask(task[rowId], (current) => ({ ...current, pinned: current.pinned !== true })))
+            focusTask(task[rowId]);
+        } else if (action === "delete" && persist(tasks.filter((item) => item !== task))) {
+          offerTaskUndo({ task, index });
+          $("period-open").focus({ preventScroll: true });
+        }
+      };
+      onDocument("contextmenu", (event) => {
+        const row = event.target.closest(".task");
+        if (!row || event.target.closest("input, textarea, [contenteditable]")) return;
+        event.preventDefault();
+        const rect = row.getBoundingClientRect();
+        openTaskMenu(row, event.clientX || rect.left + 20, event.clientY || rect.bottom);
+      });
+      onDocument("pointerdown", (event) => {
+        if (!$("task-menu").contains(event.target)) closeTaskMenu();
+      }, true);
+      onDocument("scroll", () => closeTaskMenu(), true);
+      window.addEventListener("blur", () => closeTaskMenu());
+      window.addEventListener("resize", () => closeTaskMenu());
       let taskDateMode = "day",
         taskDateStart = "",
         taskDateEnd = "",
         taskDateRangeAnchor = "",
         taskCalendarCursor = new Date();
-      let taskWeekdays = Array.from({ length: 7 }, (_, i) =>
-        dateFormatter(localeNames[uiLocale], {
-          weekday: "short",
-          timeZone: "UTC",
-        }).format(new Date(Date.UTC(2024, 0, 1 + i))),
-      );
+      let weekdays = [];
       function taskDateLabel(value) {
         const [y, m, d] = value.split("-").map(Number);
         return dateFormatter(localeNames[uiLocale], {
@@ -3977,7 +4356,7 @@
           { year: "numeric", month: "long" },
         ).format(monthDate);
         days.innerHTML = "";
-        for (const label of taskWeekdays) {
+        for (const label of weekdays) {
           const heading = document.createElement("span");
           heading.className = "task-calendar-weekday";
           heading.textContent = label;
@@ -4146,7 +4525,7 @@
         widget.style.setProperty("--fit-scale", fit.toFixed(3));
       });
       fitObserver.observe(widget);
-      if (localStorage.getItem(UI_KEY) === "1")
+      if (readStorage(UI_KEY) === "1")
         widget.classList.add("collapsed");
       function syncCollapse() {
         const collapsed = widget.classList.contains("collapsed");
@@ -4159,11 +4538,9 @@
         $("collapse-icon").textContent = "⌄";
       }
       function toggleCollapsed() {
-        widget.classList.toggle("collapsed");
-        writeStorage(
-          UI_KEY,
-          widget.classList.contains("collapsed") ? "1" : "0",
-        );
+        const collapsed = !widget.classList.contains("collapsed");
+        if (!writeStorage(UI_KEY, collapsed ? "1" : "0")) return;
+        widget.classList.toggle("collapsed", collapsed);
         syncCollapse();
       }
       $("collapse-toggle").onclick = toggleCollapsed;
@@ -4173,17 +4550,17 @@
         finishMainLayout = () => {};
       const lockButton = $("lock-toggle");
       function setLocked(locked, persist = true) {
+        if (persist && !writeStorage(LOCK_KEY, locked ? "1" : "0")) return;
         widget.classList.toggle("locked", locked);
         lockButton.classList.toggle("locked", locked);
         lockButton.setAttribute("aria-label", locked ? "解锁窗口" : "锁定窗口");
         lockButton.title = locked
           ? "解锁后可拖动或调整大小"
           : "锁定后无法拖动或调整大小";
-        if (persist) writeStorage(LOCK_KEY, locked ? "1" : "0");
         if (typeof syncScheduleFreeState === "function")
           syncScheduleFreeState();
       }
-      setLocked(localStorage.getItem(LOCK_KEY) === "1", false);
+      setLocked(readStorage(LOCK_KEY) === "1", false);
       lockButton.onclick = () =>
         setLocked(!widget.classList.contains("locked"));
       let widgetDrag = null,
@@ -4271,7 +4648,7 @@
         .querySelectorAll(".resize-handle")
         .forEach((handle) => {
           handle.addEventListener("pointerdown", (e) => {
-            if (widget.classList.contains("locked")) return;
+            if (e.button !== 0 || widget.classList.contains("locked")) return;
             e.preventDefault();
             const r = widget.getBoundingClientRect();
             resizeState = {
@@ -4321,6 +4698,9 @@
             widget.style.top = top + "px";
             widget.style.width = width + "px";
             widget.style.height = height + "px";
+            const position = clampWidgetPosition(left, top);
+            widget.style.left = position.left + "px";
+            widget.style.top = position.top + "px";
             syncDockedScheduleToWidget();
             reportWidgetBounds();
           });
@@ -4399,7 +4779,7 @@
         applyLanguage();
         setLocked(false);
         widget.classList.remove("collapsed");
-        localStorage.removeItem(UI_KEY);
+        writeStorage(UI_KEY, null);
         syncCollapse();
         ["position", "left", "top", "width", "height", "margin"].forEach(
           (prop) => widget.style.removeProperty(prop),
@@ -4417,7 +4797,7 @@
         if (!pipRestore)
           writeStorage(SCHEDULE_LAYOUT_KEY, JSON.stringify(scheduleLayout));
         scheduleCollapsed = false;
-        localStorage.removeItem("minimal-task-widget-schedule-collapsed-v1");
+        writeStorage(SCHEDULE_COLLAPSED_KEY, null);
         syncScheduleCollapse();
         setScheduleLocked(true);
         requestAnimationFrame(() => snapScheduleHome(false));
@@ -4443,8 +4823,8 @@
       const editor = $("draft-editor"),
         draftWindow = $("draft-window");
       try {
-        editor.innerHTML = sanitizeDraft(localStorage.getItem(DRAFT_KEY) || "");
-        $("draft-title").value = localStorage.getItem(DRAFT_TITLE_KEY) || "";
+        editor.innerHTML = sanitizeDraft(readStorage(DRAFT_KEY) || "");
+        $("draft-title").value = readStorage(DRAFT_TITLE_KEY) || "";
       } catch {}
       $("draft-title").addEventListener("input", () =>
         writeStorage(DRAFT_TITLE_KEY, $("draft-title").value),
@@ -4453,19 +4833,8 @@
         writeStorage(DRAFT_KEY, sanitizeDraft(editor.innerHTML));
       }
       function appendDraftToTask(id) {
-        const task = tasks.find((task) => task.id === id);
         const html = sanitizeDraft(editor.innerHTML);
-        if (!task || !html.trim()) return false;
-        if (
-          !updateTask(id, (current) => ({
-            ...current,
-            memos: [
-              ...(current.memos || []),
-              { title: $("draft-title").value.trim(), html },
-            ],
-          }))
-        )
-          return false;
+        if (!html.trim() || !appendTaskEntry(id, "memos", { title: $("draft-title").value.trim(), html })) return false;
         activeDocument()
           .querySelector(`[data-id="${CSS.escape(id)}"]`)
           ?.classList.add("open");
@@ -4643,16 +5012,7 @@
             return;
           }
           if (shouldSave) {
-            if (
-              !updateTask(task.id, (current) => ({
-                ...current,
-                items: [
-                  ...current.items,
-                  { id: crypto.randomUUID(), text: value, done: false },
-                ],
-              }))
-            )
-              return;
+            if (!appendTaskEntry(task.id, "items", { id: crypto.randomUUID(), text: value, done: false })) return;
           }
           finished = true;
           li.remove();
@@ -4771,6 +5131,10 @@
         return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
       }
       function updatePeriodRange(value) {
+        if (!validDate(value)) {
+          periodDraft.start = periodDraft.end = "";
+          return;
+        }
         const d = new Date(value + "T00:00:00");
         if (periodDraft.mode === "day") {
           periodDraft.start = value;
@@ -4877,68 +5241,50 @@
       $("period-scrim").onclick = (e) => {
         if (e.target === $("period-scrim")) closeScrim($("period-scrim"));
       };
-      $("period-apply").onclick = () => {
-        const inputs = $("period-range").querySelectorAll("input");
-        if (periodDraft.mode === "custom") {
-          periodDraft.start = inputs[0].value;
-          periodDraft.end = inputs[1].value;
-          if (
-            !periodDraft.start ||
-            !periodDraft.end ||
-            periodDraft.end < periodDraft.start
-          ) {
-            toast("请检查自定义周期");
-            return;
-          }
-        } else if (!periodDraft.start || !periodDraft.end) {
-          toast("请选择日期");
-          return;
-        }
+      function applyPeriodSelection(
+        period,
+        followSystemDate = period.mode === "day" &&
+          period.start === currentZoneDay(),
+      ) {
         if (
           !saveSettings({
             ...settings,
-            periodMode: periodDraft.mode,
-            periodStart: periodDraft.start,
-            periodEnd: periodDraft.end,
-            followSystemDate:
-              periodDraft.mode === "day" &&
-              periodDraft.start === currentZoneDay(),
+            periodMode: period.mode,
+            periodStart: period.start,
+            periodEnd: period.end,
+            followSystemDate,
           })
         )
           return;
         closeScrim($("period-scrim"));
         render();
         updateClock();
+      }
+      $("period-today").onclick = () => {
+        const today = currentZoneDay();
+        applyPeriodSelection({ mode: "day", start: today, end: today }, true);
+      };
+      $("period-apply").onclick = () => {
+        const inputs = $("period-range").querySelectorAll("input");
+        if (periodDraft.mode === "custom") {
+          periodDraft.start = inputs[0].value;
+          periodDraft.end = inputs[1].value;
+          if (
+            !validDate(periodDraft.start) ||
+            !validDate(periodDraft.end) ||
+            periodDraft.end < periodDraft.start
+          ) {
+            toast("请检查自定义周期");
+            return;
+          }
+        } else if (!validDate(periodDraft.start) || !validDate(periodDraft.end)) {
+          toast("请选择日期");
+          return;
+        }
+        applyPeriodSelection(periodDraft);
       };
       const SCHEDULE_KEY = "minimal-task-widget-schedule-v1";
-      let weekdays = Array.from({ length: 7 }, (_, i) =>
-        dateFormatter(localeNames[uiLocale], {
-          weekday: "short",
-          timeZone: "UTC",
-        }).format(new Date(Date.UTC(2024, 0, 1 + i))),
-      );
-      let courses = [];
-      function normalizeCourses(value) {
-        return (Array.isArray(value) ? value : []).filter(
-          (course) =>
-            course &&
-            typeof course.name === "string" &&
-            Number.isInteger(course.day) &&
-            course.day >= 0 &&
-            course.day < 7 &&
-            Number.isFinite(course.start) &&
-            Number.isFinite(course.end) &&
-            course.start >= 420 &&
-            course.end <= 1320 &&
-            course.start < course.end,
-        );
-      }
-      try {
-        courses = JSON.parse(localStorage.getItem(SCHEDULE_KEY) || "[]");
-        courses = normalizeCourses(courses);
-      } catch {
-        courses = [];
-      }
+      let courses = identifyRecords(parseStoredJSON(SCHEDULE_KEY, readStorage(SCHEDULE_KEY), []) ?? []);
       const appStack = $("app-stack"),
         scheduleCard = $("schedule-card"),
         scheduleGrid = $("schedule-grid"),
@@ -4983,18 +5329,22 @@
         });
       }
       appStack.dataset.theme = settings.theme || "default";
-      weekdays.forEach((day, index) => {
-        const o = document.createElement("option");
-        o.value = index;
-        o.textContent = day;
-        courseDay.append(o);
-      });
-      for (let min = 7 * 60; min <= 22 * 60; min += 30) {
+      const scheduleHeader = document.createElement("div");
+      scheduleHeader.className = "schedule-grid-head";
+      scheduleHeader.style.gridRow = "1";
+      scheduleHeader.append(document.createElement("div"));
+      for (let day = 0; day < 7; day++) {
+        courseDay.add(new Option("", String(day)));
+        scheduleHeader.append(document.createElement("div"));
+      }
+      scheduleGrid.append(scheduleHeader);
+      const startMin = 7 * 60, endMin = 22 * 60, slots = (endMin - startMin) / 30;
+      for (let min = startMin; min <= endMin; min += 30) {
         const o = document.createElement("option");
         o.value = min;
-        o.textContent = `${String(Math.floor(min / 60)).padStart(2, "0")}:${String(min % 60).padStart(2, "0")}`;
+        o.textContent = clockText(min);
         courseEnd.append(o);
-        if (min < 22 * 60) courseStart.append(o.cloneNode(true));
+        if (min < endMin) courseStart.append(o.cloneNode(true));
       }
       function clockText(min) {
         return `${String(Math.floor(min / 60)).padStart(2, "0")}:${String(min % 60).padStart(2, "0")}`;
@@ -5007,29 +5357,36 @@
           courseEnd.value = String(start + 30);
       };
       let editingCourseId = null,
+        editingCourseWeekStart = "",
         suppressCourseClick = false;
-      function saveCourses(next = courses) {
+      function weekStartForDay(day) {
+        const date = new Date(day + "T12:00:00Z");
+        date.setUTCDate(date.getUTCDate() - (date.getUTCDay() + 6) % 7);
+        return date.toISOString().slice(0, 10);
+      }
+      function scheduleWeekStart() {
+        const day = ["day", "week"].includes(settings.periodMode)
+          ? settings.periodStart : currentZoneDay();
+        return weekStartForDay(day);
+      }
+      function courseWeekLabel(start) {
+        const end = new Date(start + "T12:00:00Z");
+        end.setUTCDate(end.getUTCDate() + 6);
+        return `${start} – ${end.toISOString().slice(0, 10)}`;
+      }
+      $("course-week-only").onclick = () => {
+        const toggle = $("course-week-only");
+        toggle.setAttribute("aria-checked", String(toggle.getAttribute("aria-checked") !== "true"));
+      };
+      function saveCourses(next) {
         if (!writeStorage(SCHEDULE_KEY, JSON.stringify(next))) return false;
-        courses = next;
+        courses = identifyRecords(next);
         drawSchedule();
         return true;
       }
-      function drawSchedule() {
-        scheduleGrid.innerHTML = "";
-        const head = document.createElement("div");
-        head.className = "schedule-grid-head";
-        head.style.gridRow = "1";
-        const blank = document.createElement("div");
-        head.append(blank);
-        weekdays.forEach((day) => {
-          const cell = document.createElement("div");
-          cell.textContent = day;
-          head.append(cell);
-        });
-        scheduleGrid.append(head);
-        const startMin = 7 * 60,
-          endMin = 22 * 60,
-          slots = (endMin - startMin) / 30;
+      // Time slots do not change when courses are edited or the week changes.
+      function buildScheduleSlots() {
+        const fragment = document.createDocumentFragment();
         for (let slot = 0; slot < slots; slot++) {
           const tm = document.createElement("div");
           tm.className = "schedule-time";
@@ -5037,7 +5394,7 @@
           tm.style.gridRow = String(slot + 2);
           tm.textContent =
             slot % 2 === 0 ? clockText(startMin + slot * 30) : "";
-          scheduleGrid.append(tm);
+          fragment.append(tm);
           for (let day = 0; day < 7; day++) {
             const cell = document.createElement("div");
             cell.className = "schedule-slot" + (slot % 2 === 1 ? " hour" : "");
@@ -5045,31 +5402,34 @@
             cell.dataset.slot = String(slot);
             cell.style.gridColumn = String(day + 2);
             cell.style.gridRow = String(slot + 2);
-            scheduleGrid.append(cell);
+            fragment.append(cell);
           }
         }
+        scheduleGrid.append(fragment);
+      }
+      buildScheduleSlots();
+      function drawSchedule() {
+        const week = scheduleWeekStart(), label = courseWeekLabel(week);
+        lastScheduleWeek = week;
+        updateText("schedule-week-range", label);
+        $("schedule-week-range").title = label;
+        scheduleGrid.querySelectorAll(".schedule-course").forEach(block => block.remove());
         courses.forEach((course, index) => {
-          const start = Number(course.start),
-            end = Number(course.end),
-            first = Math.floor((start - startMin) / 30),
-            span = Math.ceil((end - start) / 30),
-            day = Number(course.day);
-          if (
-            day < 0 ||
-            day > 6 ||
-            first < 0 ||
-            first >= slots ||
-            span < 1 ||
-            end > endMin
-          )
-            return;
+          if (!course || typeof course.name !== "string") return;
+          if (validDate(course.weekStart) && course.weekStart !== week) return;
+          const { start, end, day } = course;
+          if (!Number.isInteger(day) || day < 0 || day >= 7 ||
+              !Number.isFinite(start) || !Number.isFinite(end) ||
+              start < startMin || end > endMin || start >= end) return;
+          const first = Math.floor((start - startMin) / 30),
+            span = Math.ceil((end - startMin) / 30) - first;
           const block = document.createElement("button");
           block.type = "button";
           block.className = "schedule-course" + (span < 2 ? " short" : "");
           block.dataset.tone = String(index % 4);
           block.style.gridColumn = `${day + 2} / span 1`;
           block.style.gridRow = `${first + 2} / span ${span}`;
-          block.title = `${course.name} · ${weekdays[day]} ${clockText(start)}–${clockText(end)}${course.room ? " · 课室：" + course.room : ""}${course.teacher ? " · 老师：" + course.teacher : ""}`;
+          block.title = `${course.name} · ${weekdays[day]} ${clockText(start)}–${clockText(end)}${course.room ? tr(" · 课室：") + course.room : ""}${course.teacher ? tr(" · 老师：") + course.teacher : ""}`;
           const title = document.createElement("span");
           title.textContent = course.name;
           block.append(title);
@@ -5086,11 +5446,11 @@
               suppressCourseClick = false;
               return;
             }
-            openScheduleEditor(course.id);
+            openScheduleEditor(course[rowId]);
           };
           block.oncontextmenu = (e) => {
             e.preventDefault();
-            openScheduleEditor(course.id);
+            openScheduleEditor(course[rowId]);
           };
           let drag = null;
           block.onpointerdown = (e) => {
@@ -5138,7 +5498,7 @@
                 if (
                   saveCourses(
                     courses.map((item) =>
-                      item.id === course.id
+                      item === course
                         ? {
                             ...item,
                             day: Number(target.dataset.day),
@@ -5171,7 +5531,7 @@
         scheduleResizeHandles = [
           ...scheduleCard.querySelectorAll("[data-schedule-resize]"),
         ];
-      let scheduleLocked = localStorage.getItem(SCHEDULE_LOCK_KEY) !== "0";
+      let scheduleLocked = readStorage(SCHEDULE_LOCK_KEY) !== "0";
       let scheduleLayout = {
         floating: false,
         left: 28,
@@ -5179,12 +5539,7 @@
         width: 352,
         height: 220,
       };
-      try {
-        scheduleLayout = {
-          ...scheduleLayout,
-          ...JSON.parse(localStorage.getItem(SCHEDULE_LAYOUT_KEY) || "{}"),
-        };
-      } catch {}
+      scheduleLayout = { ...scheduleLayout, ...parseStoredJSON(SCHEDULE_LAYOUT_KEY, readStorage(SCHEDULE_LAYOUT_KEY), {}) };
       function persistScheduleLayout() {
         // The desktop main panel contains only a hidden schedule mirror. Its
         // measurements must not overwrite the real schedule window's size.
@@ -5377,15 +5732,10 @@
           : "收起课表";
         reportScheduleBounds();
       }
-      let scheduleCollapsed =
-        localStorage.getItem("minimal-task-widget-schedule-collapsed-v1") ===
-        "1";
+      let scheduleCollapsed = readStorage(SCHEDULE_COLLAPSED_KEY) === "1";
       $("schedule-collapse").onclick = () => {
+        if (!writeStorage(SCHEDULE_COLLAPSED_KEY, scheduleCollapsed ? "0" : "1")) return;
         scheduleCollapsed = !scheduleCollapsed;
-        writeStorage(
-          "minimal-task-widget-schedule-collapsed-v1",
-          scheduleCollapsed ? "1" : "0",
-        );
         syncScheduleCollapse();
       };
       syncScheduleCollapse();
@@ -5406,8 +5756,8 @@
             : "允许单独拖动或调整课表";
       }
       function setScheduleLocked(locked) {
+        if (!writeStorage(SCHEDULE_LOCK_KEY, locked ? "1" : "0")) return;
         scheduleLocked = locked;
-        writeStorage(SCHEDULE_LOCK_KEY, locked ? "1" : "0");
         applyScheduleLayout();
         updateScheduleLockButton();
         persistScheduleLayout();
@@ -5437,6 +5787,7 @@
           });
       });
       function restoreFromPinWindow() {
+        closeTaskMenu();
         if (!pipRestore) return;
         const saved = pipRestore;
         pipRestore = null;
@@ -5520,6 +5871,7 @@
             width,
             height,
           });
+          closeTaskMenu();
           pipWindow = pip;
           pipRestore = restore;
           pip.document.title = "主线 · 支线";
@@ -5555,7 +5907,9 @@
           for (const { type, handler, options } of documentListeners)
             pip.document.addEventListener(type, handler, options);
           localizationObserver.observe(pip.document.body, localizationOptions);
+          pip.addEventListener("blur", () => closeTaskMenu());
           pip.addEventListener("resize", () => {
+            closeTaskMenu();
             if (!scheduleLayout.floating) snapScheduleHome(false);
             else {
               clampScheduleLayout();
@@ -5830,27 +6184,39 @@
       function openScheduleEditor(courseId = null) {
         editingCourseId = courseId;
         const course = courseId
-          ? courses.find((item) => item.id === courseId)
+          ? courses.find((item) => item?.[rowId] === courseId)
           : null;
         $("schedule-dialog-title").textContent = course
           ? "编辑课程"
           : "添加课程";
         $("schedule-save").textContent = course ? "保存修改" : "添加课程";
         $("schedule-delete-current").hidden = !course;
+        editingCourseWeekStart = validDate(course?.weekStart)
+          ? course.weekStart : weekStartForDay(currentZoneDay());
+        $("course-week-only").setAttribute("aria-checked", String(validDate(course?.weekStart)));
+        updateText("course-week-range", courseWeekLabel(editingCourseWeekStart));
         if (course) {
           $("course-name").value = course.name || "";
           $("course-room").value = course.room || "";
           $("course-teacher").value = course.teacher || "";
           courseDay.value = String(course.day);
-          courseStart.value = String(course.start);
-          courseEnd.value = String(course.end);
         } else {
           $("course-name").value = "";
           $("course-room").value = "";
           $("course-teacher").value = "";
           courseDay.value = "0";
-          courseStart.value = "480";
-          courseEnd.value = "540";
+        }
+        // Preserve imported times between the half-hour choices when editing
+        // another field. A select with no matching option otherwise saves zero.
+        for (const [select, time] of [[courseStart, course?.start ?? 480], [courseEnd, course?.end ?? 540]]) {
+          select.querySelector("[data-stored-time]")?.remove();
+          select.value = String(time);
+          if (select.value === "") {
+            const option = new Option(clockText(time), String(time));
+            option.dataset.storedTime = "1";
+            select.add(option, [...select.options].find(o => Number(o.value) > time) || null);
+            select.value = option.value;
+          }
         }
         scheduleScrim.classList.add("open");
         $("course-name").focus();
@@ -5861,7 +6227,7 @@
         if (!editingCourseId) return;
         if (
           !saveCourses(
-            courses.filter((course) => course.id !== editingCourseId),
+            courses.filter((course) => course?.[rowId] !== editingCourseId),
           )
         )
           return;
@@ -5891,15 +6257,18 @@
           start,
           end,
         };
+        const weekOnly = $("course-week-only").getAttribute("aria-checked") === "true";
+        if (weekOnly) values.weekStart = editingCourseWeekStart;
         if (editingCourseId) {
           const course = courses.find(
-            (course) => course.id === editingCourseId,
+            (course) => course?.[rowId] === editingCourseId,
           );
           if (!course) {
             closeScrim(scheduleScrim);
             toast("课程已删除");
             return;
           }
+          if (!weekOnly && validDate(course.weekStart)) values.weekStart = "";
           if (
             !saveCourses(
               courses.map((item) =>
@@ -5934,6 +6303,30 @@
       };
       updateScheduleVisibility();
       function handleGlobalKeydown(e) {
+        const menu = $("task-menu");
+        if (!menu.hidden) {
+          if (e.key === "Escape" || e.key === "Tab") {
+            closeTaskMenu(true);
+            if (e.key === "Escape") e.preventDefault();
+          } else if (["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) {
+            e.preventDefault();
+            const buttons = [...menu.querySelectorAll("button")];
+            const index = buttons.indexOf(activeDocument().activeElement);
+            const next = e.key === "Home" ? 0 : e.key === "End" ? buttons.length - 1
+              : (index + (e.key === "ArrowDown" ? 1 : -1) + buttons.length) % buttons.length;
+            buttons[next].focus();
+          }
+          return;
+        }
+        if (e.key === "ContextMenu" || (e.shiftKey && e.key === "F10")) {
+          const row = e.target.closest(".task");
+          if (row && !e.target.closest("input, textarea, [contenteditable]")) {
+            e.preventDefault();
+            const rect = row.getBoundingClientRect();
+            openTaskMenu(row, rect.left + 20, rect.bottom);
+            return;
+          }
+        }
         if (e.key === "Escape") {
           activeDocument().querySelectorAll(".scrim.open").forEach(closeScrim);
           hideDraft();
@@ -5951,14 +6344,19 @@
           showDraft();
       }
       onDocument("keydown", handleGlobalKeydown);
-      window.addEventListener("storage", (event) => {
+      function handleStorageChange(event) {
         try {
           if (event.key === KEY) {
-            tasks = normalizeTasks(JSON.parse(event.newValue));
+            const value = parseStoredJSON(KEY, event.newValue, []);
+            if (!value) return;
+            tasks = identifyRecords(value);
             render();
           } else if (event.key === SETTINGS_KEY) {
+            const value = parseStoredJSON(SETTINGS_KEY, event.newValue, {});
+            if (!value) return;
             const previous = settings;
-            settings = normalizeSettings(JSON.parse(event.newValue));
+            savedSettings = value;
+            settings = normalizeSettings(value);
             if (previous.theme !== settings.theme) applyTheme(settings.theme);
             if (previous.fontSize !== settings.fontSize) applyFontSize();
             zoneSelect.value = settings.timezone;
@@ -5984,22 +6382,21 @@
             if (previous.courseEnabled !== settings.courseEnabled)
               updateScheduleVisibility();
           } else if (event.key === SCHEDULE_KEY) {
-            courses = normalizeCourses(JSON.parse(event.newValue));
+            const value = parseStoredJSON(SCHEDULE_KEY, event.newValue, []);
+            if (!value) return;
+            courses = identifyRecords(value);
             drawSchedule();
           } else if (event.key === SCHEDULE_LAYOUT_KEY) {
-            scheduleLayout = {
-              ...scheduleLayout,
-              ...JSON.parse(event.newValue || "{}"),
-            };
+            const value = parseStoredJSON(SCHEDULE_LAYOUT_KEY, event.newValue, {});
+            if (!value) return;
+            scheduleLayout = { ...scheduleLayout, ...value };
             applyScheduleLayout();
           } else if (event.key === LOCK_KEY) {
             setLocked(event.newValue === "1", false);
           } else if (event.key === UI_KEY) {
             widget.classList.toggle("collapsed", event.newValue === "1");
             syncCollapse();
-          } else if (
-            event.key === "minimal-task-widget-schedule-collapsed-v1"
-          ) {
+          } else if (event.key === SCHEDULE_COLLAPSED_KEY) {
             scheduleCollapsed = event.newValue === "1";
             syncScheduleCollapse();
           } else if (event.key === SCHEDULE_LOCK_KEY) {
@@ -6010,10 +6407,39 @@
         } catch {
           /* Ignore a malformed update and retain the current view. */
         }
-      });
+      }
+      if (window.desktopBridge?.onStorageChanged)
+        window.desktopBridge.onStorageChanged(handleStorageChange);
+      else window.addEventListener("storage", handleStorageChange);
       applyLanguage();
       reportWidgetBounds();
       reportScheduleBounds();
+      if (storageReadFailed) {
+        toast("本地数据读取失败，请重新打开后重试");
+        if (window.desktopBridge) {
+          // A failed read is an unavailable state, never an empty task board.
+          const card = desktopPanel === "schedule" ? scheduleCard : widget,
+            notice = document.createElement("div"),
+            message = document.createElement("p"),
+            retry = document.createElement("button");
+          notice.id = "storage-recovery";
+          notice.setAttribute("role", "alert");
+          message.textContent = tr("数据暂时无法读取，原记录已保留。请重试加载。");
+          retry.textContent = tr("重新加载数据");
+          retry.addEventListener("click", () => {
+            if (window.desktopBridge.reloadStorage) window.desktopBridge.reloadStorage();
+            else window.location.reload();
+          });
+          notice.append(message, retry);
+          card.append(notice);
+          reportWidgetBounds();
+          reportScheduleBounds();
+        }
+      }
+      else if (invalidStorageKeys.size)
+        toast("无法识别这项数据的格式，原记录已保留");
+      else if (window.desktopBridge?.storageRecovered)
+        toast("已从安全备份恢复本地数据");
     </script>
   </body>
 </html>
