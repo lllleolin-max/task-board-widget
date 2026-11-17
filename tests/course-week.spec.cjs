@@ -36,6 +36,23 @@ async function today(page) {
   await page.locator('#period-today').click();
 }
 
+test('course edits and week changes reuse the timetable cells and update translated tooltips', async ({ page }) => {
+  const firstSlot = await page.locator('.schedule-slot').first().elementHandle();
+  await add(page, '原文课程', false);
+  await page.locator('.schedule-course').click();
+  await page.locator('#course-room').fill('A201');
+  await page.locator('#course-teacher').fill('陈老师');
+  await page.locator('#schedule-save').click();
+  await day(page, '2026-10-28');
+  await page.locator('#settings-open').click();
+  await page.locator('#language-select').selectOption('en');
+  await page.locator('#settings-close').click();
+  expect(await firstSlot.evaluate(el => el === document.querySelector('.schedule-slot'))).toBe(true);
+  await expect(page.locator('.schedule-slot')).toHaveCount(210);
+  await expect(page.locator('.schedule-grid-head').getByText('Mon', { exact: true })).toBeVisible();
+  await expect(page.locator('.schedule-course')).toHaveAttribute('title', /原文课程.*Room: A201.*Instructor: 陈老师/);
+});
+
 test('one-week courses hide at the next Monday, remain saved and return when viewing their historical week', async ({ page }) => {
   await add(page, '每周课程', false);
   await add(page, '本周临时课程', true);

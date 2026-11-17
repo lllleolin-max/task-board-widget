@@ -81,7 +81,9 @@ function createStorageGuard(directory, io = fs) {
     for (const [file, label] of [[currentPath, 'current'], [previousPath, 'previous']]) {
       const existing = read(file);
       if (existing.invalid) archive(`corrupt-${label}`, existing.raw);
-      if (snapshot && label === 'current' && existing.document && existing.document.checksum !== snapshot.checksum)
+      const disk = existing.document;
+      if (disk && disk.checksum !== snapshot?.checksum &&
+          (!snapshot || label === 'current' || disk.revision >= snapshot.revision))
         throw new Error('Storage snapshot changed outside this process; reload and retry');
     }
     // Keep the last acknowledged state before replacing the current state.

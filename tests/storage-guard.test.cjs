@@ -176,6 +176,21 @@ test('a valid older current snapshot cannot supersede a newer previous revision'
   assert.ok(fs.readdirSync(dir).some(file => file.startsWith('rolled-back-current-')));
 });
 
+test('a live writer preserves a conflicting previous snapshot at the same or a newer revision', t => {
+  const dir = directory(t), guard = createStorageGuard(dir);
+  guard.bootstrap({ tasks: '[1]' });
+  const otherDir = directory(t), other = createStorageGuard(otherDir);
+  other.bootstrap({ tasks: '[2]' });
+  for (const value of ['[2]', '[2,3]']) {
+    other.write('tasks', value);
+    const otherFile = fs.readFileSync(path.join(otherDir, 'current.json'));
+    fs.writeFileSync(path.join(dir, 'previous.json'), otherFile);
+    assert.throws(() => guard.write('tasks', '[]'), /outside this process/);
+    assert.deepEqual(fs.readFileSync(path.join(dir, 'previous.json')), otherFile);
+    assert.equal(read(dir).values.tasks, '[1]');
+  }
+});
+
 test('failed rename keeps the acknowledged value, allows retry and cleans only its own temporary file', t => {
   const dir = directory(t);
   let fail = false;

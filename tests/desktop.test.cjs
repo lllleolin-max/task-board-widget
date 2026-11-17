@@ -1148,7 +1148,7 @@ test('raw storage IPC rejects foreign windows and subframes', async () => {
   }
   const own = env.event();
   env.ipcMain.emit('desktop:storage-bootstrap', own, { tasks: 'original' });
-  assert.deepEqual(plain(own.returnValue), { ok: true, values: { tasks: 'original' }, recovered: false });
+  assert.deepEqual(plain(own.returnValue), { ok: true, recovered: false });
   const other = env.event('schedule');
   env.ipcMain.emit('desktop:storage-write', other, 'tasks', 'new', 'original');
   assert.deepEqual(plain(other.returnValue), { ok: true, revision: 1 }, 'An initializing cache must not block durable writes');
@@ -1216,6 +1216,20 @@ test('storage preload publishes only acknowledged commits and recovers conflicts
   assert.equal(quota.bridge.writeStorage('tasks', 'new'), true);
   assert.equal(quota.bridge.readStorage('tasks'), 'new', 'A durable commit remains readable when its browser mirror is full');
   assert.equal(quota.localStorage.getItem('tasks'), 'original');
+});
+
+test('a queued conflict refresh cannot roll back a later notification for the same key', async () => {
+  const env = preload({ values: { tasks: 'before' }, commit: { ok: false, current: 'older', revision: 2 } });
+  const changes = [];
+  env.bridge.onStorageChanged(event => changes.push(event.newValue));
+  assert.equal(env.bridge.writeStorage('tasks', 'editing'), false);
+  env.ipcRenderer.emit('desktop:storage-changed', {}, { key: 'tasks', value: 'latest', revision: 3 });
+  await Promise.resolve();
+  assert.equal(env.bridge.readStorage('tasks'), 'latest');
+  assert.deepEqual(changes, ['latest']);
+  assert.equal(env.bridge.writeStorage('tasks', 'retry'), false);
+  await Promise.resolve();
+  assert.deepEqual(changes, ['latest']);
 });
 
 test('storage preload reads saved data despite an unavailable cache and observes newer startup commits', () => {

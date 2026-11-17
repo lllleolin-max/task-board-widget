@@ -17,7 +17,9 @@ async function verify(executable, expectedFile, outputFile) {
   assert.ok(executable && expectedFile && outputFile,
     'Usage: node scripts/verify-installed-data.cjs <executable> <expected-raw.json> <verified-raw.json>');
   const expected = JSON.parse(fs.readFileSync(expectedFile, 'utf8'));
-  assert.ok(expected && !Array.isArray(expected) && Object.values(expected).every(value => typeof value === 'string'));
+  assert.ok(expected && typeof expected === 'object' && !Array.isArray(expected) &&
+    Object.values(expected).every(value => typeof value === 'string' || value === null));
+  const presentValues = values => Object.fromEntries(Object.entries(values).filter(([, value]) => value !== null));
   // The userData string alone is identical inside and outside MSIX redirection.
   // Check the existing file before spawning Electron, then confirm what it sees.
   let nativeSnapshot;
@@ -33,36 +35,46 @@ async function verify(executable, expectedFile, outputFile) {
     } finally { fs.unlinkSync(probe); }
   }
   const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
-  let app;
+  let app, verified, summary;
   try {
     app = await _electron.launch({ executablePath: path.resolve(executable), args: [], env, timeout: 30000 });
+    const panel = name => app.windows().find(page => page.url().endsWith(`?panel=${name}`));
+    await expect.poll(() => !!panel('widget') && !!panel('schedule')).toBe(true);
+    const widget = panel('widget');
+    for (const page of [widget, panel('schedule')]) {
+      await page.waitForFunction(() => document.readyState === 'complete' && !!window.desktopBridge);
+      assert.equal(await page.evaluate(() => window.desktopBridge.isStorageReady()), true, 'Storage safeguard must initialize successfully');
+    }
+    const actual = await widget.evaluate(() => Object.fromEntries(Object.keys(localStorage).map(key => [key, localStorage.getItem(key)])));
+    assert.deepEqual(Object.keys(actual).sort(), Object.keys(presentValues(expected)).sort(), 'The full set of saved keys must match');
+    const runningSnapshot = await app.evaluate(({ app }) => {
+      const fs = process.mainModule.require('node:fs');
+      const path = process.mainModule.require('node:path');
+      return fs.realpathSync.native(path.join(app.getPath('userData'), 'data-safety', 'current.json'));
+    });
     if (nativeSnapshot) {
-      const runningSnapshot = await app.evaluate(({ app }) => {
-        const fs = process.mainModule.require('node:fs');
-        const path = process.mainModule.require('node:path');
-        return fs.realpathSync.native(path.join(app.getPath('userData'), 'data-safety', 'current.json'));
-      });
       assert.equal(path.win32.normalize(runningSnapshot).toLowerCase(), nativeSnapshot.toLowerCase(),
         'The installed program must read the same physical snapshot as the desktop verifier');
     }
-    await expect.poll(() => app.windows().length).toBe(2);
-    const widget = app.windows().find(page => page.url().includes('panel=widget'));
-    await widget.waitForFunction(() => !!window.desktopBridge);
-    assert.equal(await widget.evaluate(() => window.desktopBridge.isStorageReady()), true, 'Storage safeguard must initialize successfully');
-    const actual = await widget.evaluate(() => Object.fromEntries(Object.keys(localStorage).map(key => [key, localStorage.getItem(key)])));
-    assert.deepEqual(Object.keys(actual).sort(), Object.keys(expected).sort(), 'The full set of saved keys must match');
-    for (const page of app.windows()) {
-      assert.equal(await page.evaluate(() => window.desktopBridge.isStorageReady()), true);
-      const acknowledged = await page.evaluate(keys => Object.fromEntries(keys.map(key =>
-        [key, window.desktopBridge.readStorage(key)])), Object.keys(actual));
-      assert.deepEqual(acknowledged, actual, 'Both panels must read the same acknowledged raw data as the browser mirror');
-    }
+    const disk = JSON.parse(fs.readFileSync(runningSnapshot, 'utf8')).values;
+    assert.deepEqual(presentValues(disk), actual, 'The desktop snapshot and browser mirror must match');
     for (const [key, value] of Object.entries(expected)) {
+      if (value === null) assert.equal(disk[key], null, `Missing saved deletion: ${key}`);
+    }
+    verified = { ...expected, ...actual };
+    for (const page of app.windows()) {
+      const acknowledged = await page.evaluate(keys => Object.fromEntries(keys.map(key =>
+        [key, window.desktopBridge.readStorage(key)])), Object.keys(verified));
+      assert.deepEqual(acknowledged, verified, 'Both panels must read the same acknowledged raw data');
+    }
+    for (const [key, value] of Object.entries(presentValues(expected))) {
       if (actual[key] === value) continue;
       // Following the system date is the only accepted automatic setting change.
       if (key === 'minimal-task-widget-settings-v1') {
         const before = JSON.parse(value), after = JSON.parse(actual[key]);
-        assert.equal(before.followSystemDate, true);
+        assert.ok(before.followSystemDate === true || !Object.hasOwn(before, 'followSystemDate'),
+          'Historical date selection must be preserved');
+        assert.equal(before.periodMode ?? 'day', 'day');
         const today = await widget.evaluate(() => currentZoneDay());
         assert.equal(after.periodStart, today); assert.equal(after.periodEnd, today);
         delete before.periodStart; delete before.periodEnd;
@@ -70,13 +82,14 @@ async function verify(executable, expectedFile, outputFile) {
         assert.deepEqual(after, before);
       } else assert.equal(actual[key], value, `Data changed during update: ${key}`);
     }
-    fs.writeFileSync(outputFile, JSON.stringify(actual, null, 2), { flag: 'wx' });
-    console.log(JSON.stringify({ verifiedKeys: Object.keys(expected).length,
+    summary = { verifiedKeys: Object.keys(expected).length,
       tasks: JSON.parse(actual['minimal-task-widget-v1'] || '[]').length,
       courses: JSON.parse(actual['minimal-task-widget-schedule-v1'] || '[]').length,
       physicalSnapshot: nativeSnapshot,
-      version: await app.evaluate(({ app }) => app.getVersion()) }));
+      version: await app.evaluate(({ app }) => app.getVersion()) };
   } finally { if (app) await app.close(); }
+  fs.writeFileSync(outputFile, JSON.stringify(verified, null, 2), { flag: 'wx' });
+  console.log(JSON.stringify(summary));
 }
 
 if (require.main === module) verify(...process.argv.slice(2)).catch(error => { console.error(error); process.exitCode = 1; });

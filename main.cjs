@@ -428,7 +428,7 @@ else {
       const values = storageGuard.bootstrap(observed);
       storageUnavailable.delete(event.sender);
       const recovered = observed !== null && Object.entries(values).some(([key, value]) => (observed[key] ?? null) !== value);
-      event.returnValue = { ok: true, values, recovered };
+      event.returnValue = { ok: true, recovered };
     }
     catch (error) {
       storageUnavailable.add(event.sender);

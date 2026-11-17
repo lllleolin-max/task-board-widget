@@ -40,9 +40,7 @@ try {
   catch { /* An existing independent snapshot can still be read. */ }
   const result = ipcRenderer.sendSync('desktop:storage-bootstrap', observed);
   if (!result?.ok) throw new Error('Storage safeguard unavailable');
-  committed = Object.assign(Object.create(null), result.values);
-  for (const [key, value] of Object.entries(committed)) mirrorStorage(key, value);
-  // Pick up any commit made by the other renderer during preload.
+  // Mirror only the final acknowledged state, including concurrent commits.
   const latest = ipcRenderer.sendSync('desktop:storage-ready');
   if (!latest?.ok) throw new Error('Storage safeguard unavailable');
   committed = Object.assign(Object.create(null), latest.values);
@@ -63,10 +61,12 @@ function persistStorage(key, value) {
       updateCommitted(key, value, result.revision);
       return true;
     }
-    if (result && (result.current === null || typeof result.current === 'string')) {
-      updateCommitted(key, result.current, result.revision);
+    if (result && (result.current === null || typeof result.current === 'string') &&
+        updateCommitted(key, result.current, result.revision)) {
       // Let the failed caller preserve its form before refreshing stale data.
-      Promise.resolve().then(() => notifyStorage(key, result.current));
+      Promise.resolve().then(() => {
+        if (committed[key] === result.current) notifyStorage(key, result.current);
+      });
     }
   } catch { /* Failed commits never change the acknowledged data or cache. */ }
   return false;
